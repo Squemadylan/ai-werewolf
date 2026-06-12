@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Wolfcha</string>
+    <string name="home_title">Wolfcha</string>
+    <string name="start_game">Start Game</string>
+    <string name="profile">Profile</string>
+    <string name="settings">Settings</string>
+    <string name="back">Back</string>
+    <string name="game">Game</string>
+    <string name="player_profile">Player Profile</string>
+</resources>
