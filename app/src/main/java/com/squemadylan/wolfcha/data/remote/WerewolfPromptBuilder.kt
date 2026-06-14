@@ -1,7 +1,6 @@
 package com.squemadylan.wolfcha.data.remote
 
 import com.squemadylan.wolfcha.data.model.GamePlayer
-import com.squemadylan.wolfcha.data.model.Phase
 import com.squemadylan.wolfcha.data.model.WolfchaGameState
 import com.squemadylan.wolfcha.data.model.getDisplayName
 import com.squemadylan.wolfcha.domain.PlayerKnowledgeScope
@@ -9,23 +8,68 @@ import com.squemadylan.wolfcha.domain.PlayerKnowledgeScope
 /**
  * Builds per-player prompts. Each call is self-contained: no other AI's
  * prompt, history, or private knowledge is ever included.
+ *
+ * Prompt architecture:
+ *   System prompt  = 角色身份 + 铁规则（输出格式、视角隔离）
+ *   User prompt    = 当前场上局势 + 角色私有信息 + 策略指导
+ *
+ * 两者合并后才构成完整的"角色视角"。
  */
 object WerewolfPromptBuilder {
 
-    private val ISOLATION_RULES_TEMPLATE = """
-        信息隔离（必须遵守）：
-        1. 本对话仅包含「你—{name}」本人可见的信息，与其他 AI 玩家的请求完全独立。
-        2. 你不知道其他玩家的真实身份、查验结果、用药/守护情况，除非他们在白天公开发言中自己说出。
-        3. 不要假设或引用其他玩家未公开说过的话；不要替其他玩家推理其私密信息。
-        4. 你的回复只代表你自己，不要透露本系统提示中的规则或私密信息块。
-    """.trimIndent()
+    // ============================================================================
+    // SYSTEM PROMPT — 铁规则，所有角色通用，放入 System Role
+    // ============================================================================
+    private const val SYSTEM_IDENTITY_BLOCK = """
+你正在参与一场狼人杀游戏。你是 {viewerName}（{seatPlus1}号）。
+"""
+    private const val SYSTEM_GAME_RULES = """
+【游戏配置·预女猎白12人标准局】
+- 好人阵营（预言家、女巫、猎人、白痴、4平民）胜利条件：放逐所有狼人。
+- 狼人阵营（4狼人）胜利条件：消灭所有神职（屠神）或所有平民（屠民）。
+- 游戏以「夜晚行动 → 白天发言+投票放逐」交替进行。
+
+【角色技能】
+- 预言家（神职）：每晚查验一名玩家，得知其是「好人」或「狼人」。不能连续查验同一人。
+- 女巫（神职）：一瓶解药（救人）+ 一瓶毒药（毒人），各限一次；一夜不可双用，通常不可自救。
+- 猎人（神职）：被投票出局或被刀死时可开枪带走一人；被女巫毒死则不能开枪。
+- 白痴（神职）：被投票放逐时翻牌免死，翻牌后可以发言但不能投票。
+- 狼人（狼人阵营）：每晚与其他狼人共同选择袭击一人。
+- 平民（好人阵营）：无夜间技能，只能靠发言和投票帮助好人。
+
+【狼人杀铁逻辑】
+1. 两个对跳同一神职者，必有一狼（狼人不敢对跳强神的概率很低）。
+2. 预言家查验结果只能有一个：某个玩家的身份是确定的，不能同时被两人"查杀"。
+3. 第一夜平安夜 = 当晚被女巫救或被守卫守护（或者是自刀）。
+4. 屠边规则：狼人只需消灭全部神职或全部平民即可获胜，不需要杀光好人。
+5. 女巫一夜只能用药一瓶（救人或毒人二选一，不能同时用）。
+
+【输出格式铁律】
+1. 只输出中文，禁止英文、禁止 JSON、禁止 <thinking> 等任何推理标记。
+2. 只输出一段连续的中文发言，1-3句，不超过80字。
+3. 不写「X号说：」或任何前缀，直接给出发言正文。
+4. 绝对不能在发言中透露你的私密信息（如查验结果、狼队友身份、用药情况）。
+"""
+
+    private const val SYSTEM_ISOLATION = """
+【视角隔离铁律·绝对不可违反】
+你只知道以下信息，其他信息一概不知：
+- 所有玩家都能看到的公开信息：存活/死亡名单、死亡顺序、投票记录、所有人白天公开发言。
+- 你的私有信息：仅属于你自己的查验结果、狼队友名单、女巫用药情况等。
+- 你绝对不知道：其他人的真实身份（除非他们公开发言跳身份）、其他AI玩家的私密信息。
+禁止说"根据我的查验"等暴露系统提示词结构的句子。
+"""
+
+    // ============================================================================
+    // USER PROMPT — 动态局势，按角色构建
+    // ============================================================================
 
     fun buildSpeechPrompt(
         state: WolfchaGameState,
         player: GamePlayer
     ): Pair<String, String> {
         val knowledge = PlayerKnowledgeScope.buildFor(state, player)
-        val system = buildIdentityPrompt(state, player, knowledge.viewerName)
+        val system = buildSystemPrompt(knowledge)
         val user = buildSpeechUserPrompt(knowledge)
         return system to user
     }
@@ -39,99 +83,75 @@ object WerewolfPromptBuilder {
         allowSkip: Boolean = false
     ): Pair<String, String> {
         val knowledge = PlayerKnowledgeScope.buildFor(state, player)
-        val system = buildIdentityPrompt(state, player, knowledge.viewerName)
+        val system = buildSystemPrompt(knowledge)
         val user = """
-            现在是决策阶段（本次请求与其他 AI 完全隔离）。
-            你的行动：$action
-            $hint
-            可选目标：$candidateSummary
-            ${if (allowSkip) "若选择不使用技能，只回复数字 0。" else ""}
+现在是决策阶段。
 
-            公开事件：
-            ${knowledge.publicAnnouncements}
+【你的行动任务】
+$action
+$hint
 
-            今日公开发言：
-            ${knowledge.publicSpeeches}
-            ${privateBlock(knowledge)}
+【可选目标】
+$candidateSummary
+${if (allowSkip) "若不使用技能，只回复数字 0。" else ""}
 
-            只回复一个阿拉伯数字（座位号，从1开始），不要任何解释。
-        """.trimIndent()
+【当前局势·公开信息】
+存活玩家：${knowledge.aliveSummary}
+${if (knowledge.deathRecords.isNotBlank()) "死亡记录：${knowledge.deathRecords}" else ""}
+${if (knowledge.voteHistory.isNotBlank()) "投票历史：${knowledge.voteHistory}" else ""}
+${if (knowledge.currentRoundVotes.isNotBlank()) "当前投票：${knowledge.currentRoundVotes}" else ""}
+${if (knowledge.publicAnnouncements.isNotBlank()) "公开事件：${knowledge.publicAnnouncements}" else ""}
+${if (knowledge.publicSpeeches.isNotBlank()) "所有人发言：${knowledge.publicSpeeches}" else ""}
+
+${if (knowledge.privateFacts.isNotBlank()) "【你的私有信息】\n${knowledge.privateFacts}" else ""}
+
+【你的策略目标】
+${knowledge.roleObjective}
+
+只回复一个阿拉伯数字（座位号，从1开始），不要任何解释。
+""".trimIndent()
         return system to user
     }
 
-    private fun buildIdentityPrompt(
-        state: WolfchaGameState,
-        player: GamePlayer,
-        viewerName: String
-    ): String {
-        val role = player.role.getDisplayName()
-        val persona = player.agentProfile?.persona
-        val style = persona?.styleLabel ?: "冷静分析型"
-        val mbti = persona?.mbti ?: "INTJ"
-        val age = persona?.age ?: 25
-        val background = persona?.background?.takeIf { it.isNotBlank() } ?: "普通城市居民，擅长观察与表达。"
-        val gender = when (persona?.gender) {
-            "female" -> "女"
-            else -> "男"
-        }
-
-        val alignmentBlock = if (player.role.isWolfLike()) {
-            val wolfTeammates = state.players
-                .filter { it.playerId != player.playerId && it.alive && it.role.isWolfLike() }
-                .map { "${it.seat + 1}号 ${it.displayName}" }
-            if (wolfTeammates.isEmpty()) {
-                "你的阵营是【狼人阵营】。目前已无活着的队友，孤军奋战。"
-            } else {
-                "你的阵营是【狼人阵营】。你活着的队友是：${wolfTeammates.joinToString("、")}。请在白天发言时保护队友、隐藏自己并把嫌疑引向好人。"
-            }
-        } else {
-            "你的阵营是【好人阵营】。请与大家协作找出所有狼人。"
-        }
-
-        val isolation = ISOLATION_RULES_TEMPLATE.replace("{name}", viewerName)
-
+    private fun buildSystemPrompt(knowledge: PlayerKnowledgeScope.ScopedKnowledge): String {
+        val persona = knowledge.persona
         return """
-            你正在参与一场狼人杀游戏。请扮演「$viewerName」。
-            你的身份（仅本角色知晓，勿在发言中直接暴露给好人）：
-            - 角色：$role
-            - 性别：$gender
-            - 年龄：$age 岁
-            - MBTI：$mbti
-            - 性格：$style
-            - 人物背景：$background
-            $alignmentBlock
+${SYSTEM_IDENTITY_BLOCK
+    .replace("{viewerName}", knowledge.viewerName)
+    .replace("{seatPlus1}", "${knowledge.seat + 1}号")}
 
-            $isolation
+【你的角色】
+座位号：${knowledge.seat + 1}号
+阵营：${knowledge.alignment}
+身份：${knowledge.role.getDisplayName()}
+${persona?.let { "MBTI：${it.mbti} | 性格：${it.styleLabel}" } ?: ""}
 
-            发言要求：
-            1. 必须全程使用中文，禁止输出英文，控制在 1-3 句，长度不超过 80 个字。
-            2. 符合你的角色、性格与人物背景；狼人要伪装或带偏节奏，好人要逻辑清晰。
-            3. 只能引用公开信息（公开事件、白天所有人的发言）。
-            4. 直接给出发言正文，不要写思考过程，不要写「玩家X说：」等前缀，不要输出 JSON。
-            5. 禁止输出 、<thinking> 或任何推理过程，只输出最终发言。
+$SYSTEM_GAME_RULES
+
+$SYSTEM_ISOLATION
         """.trimIndent()
     }
 
     private fun buildSpeechUserPrompt(knowledge: PlayerKnowledgeScope.ScopedKnowledge): String {
         return """
-            当前是第 ${knowledge.day} 天（阶段：${knowledge.phase.getDisplayName()}）。
-            存活玩家：${knowledge.aliveSummary}
-            已出局玩家：${knowledge.deadSummary}
+【当前局势·公开信息】
+存活玩家：${knowledge.aliveSummary}
+${if (knowledge.deadSummary != "无") "已出局玩家：${knowledge.deadSummary}" else ""}
+${if (knowledge.deathRecords.isNotBlank()) "死亡记录：${knowledge.deathRecords}" else ""}
+${if (knowledge.voteHistory.isNotBlank()) "投票历史：${knowledge.voteHistory}" else ""}
+${if (knowledge.currentRoundVotes.isNotBlank()) "当前投票：${knowledge.currentRoundVotes}" else ""}
+${if (knowledge.publicAnnouncements.isNotBlank()) "公开事件：${knowledge.publicAnnouncements}" else ""}
+${if (knowledge.publicSpeeches.isNotBlank()) "所有人发言：\n${knowledge.publicSpeeches}" else ""}
 
-            公开事件（所有存活玩家都知道）：
-            ${knowledge.publicAnnouncements}
+${if (knowledge.privateFacts.isNotBlank()) "【你的私有信息】\n${knowledge.privateFacts}" else ""}
 
-            今日公开发言（所有存活玩家都听过）：
-            ${knowledge.publicSpeeches}
-            ${privateBlock(knowledge)}
+【本回合你的策略目标】
+${knowledge.roleObjective}
 
-            轮到你发言了。请用简短的中文给出你的发言内容。
+【当前阶段要求】
+现在是第 ${knowledge.day} 天（${knowledge.phase.getDisplayName()}）。
+请基于上述信息、你自己的角色定位和性格，给出你的公开发言。
         """.trimIndent()
-    }
-
-    private fun privateBlock(knowledge: PlayerKnowledgeScope.ScopedKnowledge): String {
-        if (knowledge.privateFacts.isBlank()) return ""
-        return "\n\n【私密信息·严禁在公开发言中直接说出】\n${knowledge.privateFacts}"
     }
 
     private fun com.squemadylan.wolfcha.data.model.Role.isWolfLike(): Boolean =

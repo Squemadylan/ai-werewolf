@@ -23,6 +23,9 @@ data class WolfchaGameState(
     val voteReasons: Map<String, String> = emptyMap(),
     val lastVoteReasons: Map<String, String> = emptyMap(),
     val voteHistory: Map<Int, Map<String, Int>> = emptyMap(),
+    val executedHistory: Map<Int, Int> = emptyMap(), // day -> seat
+    val executedReasonHistory: Map<Int, String> = emptyMap(), // day -> reason
+    val nightDeaths: Map<Int, List<Pair<Int, String>>> = emptyMap(), // day -> list of (seat, reason)
     val nightActions: NightActions = NightActions(),
     val roleAbilities: RoleAbilities = RoleAbilities(),
     val winner: Alignment? = null,
@@ -86,6 +89,7 @@ data class WolfchaGameState(
         return votes[voter.playerId]
     }
 
+    /** 当前轮（尚未 resolve 的）投票中每人的投票目标（按座位号排序） */
     val voteDisplayList: List<Pair<GamePlayer, Int?>>
         get() {
             val result = mutableListOf<Pair<GamePlayer, Int?>>()
@@ -95,4 +99,58 @@ data class WolfchaGameState(
             }
             return result
         }
+
+    /** 当前轮（尚未 resolve 的）投票中，每个目标玩家收到多少票 */
+    val voteTargetCounts: Map<Int, Int>
+        get() {
+            val counts = mutableMapOf<Int, Int>()
+            votes.values.forEach { seat ->
+                counts[seat] = (counts[seat] ?: 0) + 1
+            }
+            return counts
+        }
+
+    /** 从投票历史获取某一天每个投票者的目标座位
+     * 返回: Map<voterPlayerId, targetSeat> */
+    fun votesOnDay(targetDay: Int): Map<String, Int> = voteHistory[targetDay] ?: emptyMap()
+
+    /** 某一天投票出局的玩家座位 */
+    fun executedSeatOnDay(targetDay: Int): Int? = executedHistory[targetDay]
+
+    fun executedReasonOnDay(targetDay: Int): String = executedReasonHistory[targetDay] ?: "被投票出局"
+
+    /** 某一夜死亡的玩家 */
+    fun nightDeathsOnNight(nightDay: Int): List<Pair<Int, String>> = nightDeaths[nightDay] ?: emptyList()
+
+    /** 返回指定玩家到现在为止的所有发言 */
+    fun speechesByPlayer(playerId: String): List<String> {
+        return messages.filter { it.playerId == playerId }.map { it.content }
+    }
+
+    /** 返回某一天所有玩家的发言（按发言顺序） */
+    fun speechesOnDay(targetDay: Int): List<ChatMessage> {
+        return messages.filter { it.day == targetDay && !it.isSystem }
+    }
+
+    /** 返回所有已经公开的死亡信息（不含玩家身份） */
+    fun publicDeathSummary(): List<String> {
+        val lines = mutableListOf<String>()
+        for (d in 1..day) {
+            val deaths = nightDeaths[d]
+            if (!deaths.isNullOrEmpty()) {
+                val names = deaths.joinToString("、") { (seat, reason) ->
+                    val name = getPlayerBySeat(seat)?.displayName ?: ""
+                    "${seat + 1}号$name（$reason）"
+                }
+                lines.add("第$d 天夜晚: $names")
+            }
+            val executed = executedHistory[d]
+            if (executed != null) {
+                val player = getPlayerBySeat(executed)
+                val reason = executedReasonHistory[d] ?: "被投票出局"
+                lines.add("第$d 天白天: ${executed + 1}号${player?.displayName ?: ""}（$reason）")
+            }
+        }
+        return lines
+    }
 }

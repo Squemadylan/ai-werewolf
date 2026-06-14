@@ -265,13 +265,21 @@ class GameEngine(
             }
         }
 
+        val deathPairsForStorage = deaths.map { (seat, _) ->
+            seat to "死亡"
+        }
+
+        val newNightDeaths = currentState.nightDeaths.toMutableMap()
+        newNightDeaths[currentState.day] = deathPairsForStorage
+
         val newState = currentState.copy(
             players = newPlayers,
             phase = Phase.DAY_START,
             nightActions = NightActions(
                 lastGuardTarget = nightActions.guardTarget
             ),
-            roleAbilities = roleAbilities
+            roleAbilities = roleAbilities,
+            nightDeaths = newNightDeaths
         )
 
         _gameState.value = newState
@@ -307,14 +315,26 @@ class GameEngine(
         val isTie = voteCounts.values.count { it == maxVotes?.value } > 1
 
         return if (isTie || maxVotes == null) {
-            val newState = currentState.copy(phase = Phase.DAY_RESOLVE)
+            val newState = currentState.copy(
+                phase = Phase.DAY_RESOLVE,
+                voteHistory = currentState.voteHistory + (currentState.day to votes)
+            )
             _gameState.value = newState
             newState to null
         } else {
             val executedSeat = maxVotes.key
+            val newExecutedHistory = currentState.executedHistory.toMutableMap()
+            newExecutedHistory[currentState.day] = executedSeat
+            val executedPlayer = currentState.getPlayerBySeat(executedSeat)
+            val reason = "被投票出局（${maxVotes.value}票）"
+            val newReasonHistory = currentState.executedReasonHistory.toMutableMap()
+            newReasonHistory[currentState.day] = reason
+
             val newState = currentState.copy(
                 phase = Phase.DAY_RESOLVE,
-                voteHistory = currentState.voteHistory + (currentState.day to votes)
+                voteHistory = currentState.voteHistory + (currentState.day to votes),
+                executedHistory = newExecutedHistory,
+                executedReasonHistory = newReasonHistory
             )
             _gameState.value = newState
             newState to executedSeat
@@ -466,67 +486,259 @@ class GameEngine(
         return fallbackSpeech(player, currentState)
     }
 
+    // ==========================================================================
+    // Fallback 发言（与 PlayerKnowledgeScope 策略保持一致）
+    // ==========================================================================
+
     private fun fallbackSpeech(player: GamePlayer, state: WolfchaGameState): String {
         return when (player.role) {
-            Role.Villager -> generateVillagerSpeech(player)
-            Role.Werewolf, Role.WhiteWolfKing -> generateWolfSpeech(player)
-            Role.Seer -> generateSeerSpeech(player, state)
-            Role.Witch -> generateWitchSpeech(player, state)
-            Role.Hunter -> generateHunterSpeech(player)
-            Role.Guard -> generateGuardSpeech(player)
-            Role.Idiot -> generateIdiotSpeech(player)
+            Role.Villager, Role.Idiot -> generateVillagerSpeechV3(player, state)
+            Role.Werewolf, Role.WhiteWolfKing -> generateWolfSpeechV3(player, state)
+            Role.Seer -> generateSeerSpeechV3(player, state)
+            Role.Witch -> generateWitchSpeechV3(player, state)
+            Role.Hunter -> generateHunterSpeechV3(player, state)
+            Role.Guard -> generateGuardSpeechV3(player, state)
         }
     }
 
-    private fun generateVillagerSpeech(player: GamePlayer): String {
-        val speeches = listOf(
-            "我是好人，请大家仔细听逻辑，少被带节奏。",
-            "我没拿到神职，但愿意帮大家梳理一下今天的发言。",
-            "建议先关注发言前后矛盾的人，别急着站队。",
-            "听了一圈，暂时没看出明显漏洞，我再观望一轮。"
-        )
-        return speeches.random()
+    /** 从发言历史中找最近跳预言家的存活玩家 - 更严格的语义识别 */
+    private fun seerClaimantFromHistory(state: WolfchaGameState): Int? {
+        val msg = state.messages.takeLast(30).lastOrNull { msg ->
+            val player = state.getPlayerById(msg.playerId)
+            if (player?.alive != true) false
+            else isExplicitSeerClaim(msg.content)
+        }
+        return msg?.let { state.getPlayerById(it.playerId)?.seat }
     }
 
-    private fun generateWolfSpeech(player: GamePlayer): String {
-        val speeches = listOf(
-            "我觉得 ${player.displayName} 发言最有逻辑，先听听别人怎么看。",
-            "我没拿到身份牌，从发言看更倾向相信刚刚那位。",
-            "今晚的票我已经有方向了，先卖个关子。",
-            "大家别被情绪带跑，先把逻辑捋清楚再说。"
-        )
-        return speeches.random()
+    /** 判断一条发言是否是发言者本人跳预言家 —— 排除引用/讨论他人的情况 */
+    private fun isExplicitSeerClaim(content: String): Boolean {
+        // 第一关：必须包含"我是预言家"或"我跳预言家"
+        if (!content.contains("我是预言家") && !content.contains("我跳预言家")) {
+            return false
+        }
+        // 第二关：排除转述/讨论他人的情况
+        if (content.contains("他说") || content.contains("有人说") ||
+            content.contains("跳了预言家") || content.contains("说他是预言家") ||
+            content.contains("没人跳预言家") || content.contains("没人跳预言") ||
+            content.contains("还没跳预言") || content.contains("还没人跳预言") ||
+            content.contains("还没跳") || content.contains("还没人跳")
+        ) {
+            return false
+        }
+        // 第三关：必须以明确的自我声明格式开头
+        val hasExplicitPrefix = content.startsWith("我是预言家") ||
+            content.startsWith("我跳预言家") ||
+            content.startsWith("那我是预言家") ||
+            content.startsWith("但我是预言家")
+        return hasExplicitPrefix
     }
 
-    private fun generateSeerSpeech(player: GamePlayer, state: WolfchaGameState): String {
-        val seerHistory = state.nightActions.seerHistory
-        return if (seerHistory.isNotEmpty()) {
-            val lastCheck = seerHistory.last()
-            val target = state.getPlayerBySeat(lastCheck.targetSeat)
-            val result = if (lastCheck.isWolf) "狼人" else "好人"
-            "我是预言家，昨晚查的是 ${target?.seat?.plus(1) ?: "?"}号 ${target?.displayName ?: ""}，他是 $result。"
+    /** 当前票数最高者（仅座位号） */
+    private fun topVoteFromCounts(state: WolfchaGameState): Int? =
+        state.voteTargetCounts.entries.maxByOrNull { it.value }?.takeIf { it.value > 0 }?.key
+
+    private fun generateVillagerSpeechV3(player: GamePlayer, state: WolfchaGameState): String {
+        val seat = player.seat + 1
+        val seerClaimant = seerClaimantFromHistory(state)
+        val topVote = topVoteFromCounts(state)
+        val lastExecuted = state.executedHistory[state.day - 1]
+        val lastName = lastExecuted?.let { state.getPlayerBySeat(it)?.displayName ?: "" } ?: ""
+        val lastCount = state.voteHistory[state.day - 1]?.values?.count { it == lastExecuted } ?: 0
+
+        val lines = mutableListOf<String>()
+        lines.add("我是${seat}号${player.displayName}，平民。")
+
+        if (seerClaimant != null) {
+            val seerName = state.getPlayerBySeat(seerClaimant)?.displayName ?: ""
+            lines.add("有人跳预言家（${seerClaimant + 1}号${seerName}），我看他的逻辑再说。")
         } else {
-            "我是预言家，昨晚查了人，但现在不方便直接报。"
+            lines.add("还没人跳预言家，先听发言再判断。")
         }
+
+        if (lastExecuted != null && state.day >= 2) {
+            lines.add("昨天${lastExecuted + 1}号$lastName 拿了$lastCount 票出局。")
+        }
+
+        topVote?.let { tv ->
+            if (tv != player.seat) {
+                val tvName = state.getPlayerBySeat(tv)?.displayName ?: ""
+                lines.add("目前${tv + 1}号$tvName 票最高，值得关注。")
+            }
+        }
+
+        return lines.shuffled().take(2).joinToString(" ")
     }
 
-    private fun generateWitchSpeech(player: GamePlayer, state: WolfchaGameState): String {
-        return if (state.roleAbilities.witchHealUsed && state.roleAbilities.witchPoisonUsed) {
-            "药都用完了，下面只能靠大家的判断了。"
+    private fun generateWolfSpeechV3(player: GamePlayer, state: WolfchaGameState): String {
+        val seat = player.seat + 1
+        val wolves = state.players.filter {
+            it.playerId != player.playerId && it.alive && it.role.isWolfRole()
+        }
+        val wolfNames = wolves.joinToString("、") { "${it.seat + 1}号${it.displayName}" }
+        val seerClaimant = seerClaimantFromHistory(state)
+        val lastCheck = state.nightActions.seerHistory.lastOrNull()
+        val topVote = topVoteFromCounts(state)
+
+        // 被真预言家查杀了？必须对跳！
+        val checkedUs = lastCheck?.let { check ->
+            check.isWolf && (check.targetSeat == player.seat || wolves.any { it.seat == check.targetSeat })
+        } ?: false
+
+        return if (checkedUs && seerClaimant != null) {
+            val seerName = state.getPlayerBySeat(seerClaimant)?.displayName ?: ""
+            val checkedName = lastCheck?.let { "${it.targetSeat + 1}号${state.getPlayerBySeat(it.targetSeat)?.displayName ?: ""}" } ?: "?"
+            if (lastCheck?.targetSeat == player.seat) {
+                "我是${seat}号${player.displayName}，我是预言家！${seerClaimant + 1}号$seerName 是悍跳，我才是真的！昨夜我验了${lastCheck.targetSeat + 1}号$checkedName 是狼！请出${seerClaimant + 1}号$seerName！"
+            } else {
+                "我是${seat}号${player.displayName}，我是预言家！${seerClaimant + 1}号$seerName 是悍跳！${lastCheck?.targetSeat?.plus(1) ?: "?"}号$checkedName 是我的金水，请出${seerClaimant + 1}号$seerName！"
+            }
+        } else if (seerClaimant != null && state.day <= 2 && Math.random() < 0.35) {
+            val seerName = state.getPlayerBySeat(seerClaimant)?.displayName ?: ""
+            "我是${seat}号${player.displayName}，预言家！${seerClaimant + 1}号$seerName 悍跳！"
         } else {
-            "我是平民，今晚没拿到特殊信息，先听听别人怎么说。"
+            val lines = mutableListOf<String>()
+            lines.add("我是${seat}号${player.displayName}，平民。")
+            topVote?.let { tv ->
+                if (tv != player.seat && !wolves.any { it.seat == tv }) {
+                    val tvName = state.getPlayerBySeat(tv)?.displayName ?: ""
+                    lines.add("目前${tv + 1}号$tvName 票最高，我也在关注他。")
+                }
+            }
+            lines.add("先听预言家发言，站边再决定。")
+            lines.shuffled().take(2).joinToString(" ")
         }
     }
 
-    private fun generateHunterSpeech(player: GamePlayer): String {
-        return "我是猎人，希望这轮别投我，不然我一定开枪。"
+    private fun generateSeerSpeechV3(player: GamePlayer, state: WolfchaGameState): String {
+        val seat = player.seat + 1
+        val history = state.nightActions.seerHistory
+        val lastCheck = history.lastOrNull()
+        val seerClaimant = seerClaimantFromHistory(state)
+        val hasWolf = lastCheck?.isWolf == true
+        val hasCheck = history.isNotEmpty()
+        val someoneClaimed = seerClaimant != null && seerClaimant != player.seat
+
+        return when {
+            hasWolf && hasCheck -> {
+                val target = lastCheck?.targetSeat?.let { state.getPlayerBySeat(it) }
+                val tName = target?.displayName ?: ""
+                val tSeat = lastCheck?.targetSeat?.plus(1) ?: "?"
+                val nextCheck = state.alivePlayers
+                    .filter { it.seat != player.seat && it.seat != lastCheck?.targetSeat && it.alive }
+                    .minByOrNull { it.seat }
+                val next = nextCheck?.let { "接下来我会查${it.seat + 1}号${it.displayName}。" } ?: ""
+                if (someoneClaimed) {
+                    val claimer = state.getPlayerBySeat(seerClaimant!!)
+                    "我是${seat}号${player.displayName}，我是预言家！${seerClaimant + 1}号${claimer?.displayName ?: ""} 悍跳！昨夜我查了${tSeat}号$tName 是查杀，请出他！$next"
+                } else {
+                    "我是${seat}号${player.displayName}，我是预言家！昨夜查验${tSeat}号$tName 是查杀！${next}请大家出${tSeat}号！"
+                }
+            }
+            someoneClaimed -> {
+                val claimer = state.getPlayerBySeat(seerClaimant!!)
+                if (hasCheck && !hasWolf) {
+                    val tName = lastCheck?.targetSeat?.let { "${it + 1}号${state.getPlayerBySeat(it)?.displayName ?: ""}" } ?: "?"
+                    "我是${seat}号${player.displayName}，我是预言家！${seerClaimant + 1}号${claimer?.displayName ?: ""} 悍跳！昨夜我验了$tName 是金水，大家相信我！"
+                } else {
+                    "我是${seat}号${player.displayName}，预言家！${seerClaimant + 1}号${claimer?.displayName ?: ""} 是悍跳！请大家相信我！"
+                }
+            }
+            hasCheck && !hasWolf -> {
+                val tName = lastCheck?.targetSeat?.let { "${it + 1}号${state.getPlayerBySeat(it)?.displayName ?: ""}" } ?: "?"
+                "我是${seat}号${player.displayName}，好人，${tName}是我的金水，先听大家发言。"
+            }
+            else -> {
+                "我是${seat}号${player.displayName}，好人，先听大家怎么说。"
+            }
+        }
     }
 
-    private fun generateGuardSpeech(player: GamePlayer): String {
-        return "我是守卫，已经守过一个人，今晚得换个目标。"
+    private fun generateWitchSpeechV3(player: GamePlayer, state: WolfchaGameState): String {
+        val seat = player.seat + 1
+        val healUsed = state.roleAbilities.witchHealUsed
+        val poisonUsed = state.roleAbilities.witchPoisonUsed
+        val wolfTarget = state.nightActions.wolfTarget
+        val seerClaimant = seerClaimantFromHistory(state)
+
+        return when {
+            healUsed && poisonUsed -> "我是${seat}号${player.displayName}，药没了，先听发言。"
+            healUsed -> "我是${seat}号${player.displayName}，我有身份，毒药还在。"
+            poisonUsed -> "我是${seat}号${player.displayName}，我有身份，解药还在。"
+            wolfTarget != null && !state.phase.isNightPhase() -> {
+                val wName = state.getPlayerBySeat(wolfTarget)?.displayName ?: ""
+                "我是${seat}号${player.displayName}，女巫。昨夜${wolfTarget + 1}号$wName 被刀了，我救了。"
+            }
+            else -> {
+                val lines = mutableListOf<String>()
+                lines.add("我是${seat}号${player.displayName}，我有身份。")
+                seerClaimant?.let {
+                    val sName = state.getPlayerBySeat(it)?.displayName ?: ""
+                    lines.add("有人跳预言家（${it + 1}号$sName），我听他怎么说。")
+                }
+                lines.shuffled().take(2).joinToString(" ")
+            }
+        }
     }
 
-    private fun generateIdiotSpeech(player: GamePlayer): String {
-        return "嗯…那个…我其实也没啥好说的…大家加油…"
+    private fun generateHunterSpeechV3(player: GamePlayer, state: WolfchaGameState): String {
+        val seat = player.seat + 1
+        val seerClaimant = seerClaimantFromHistory(state)
+        return if (seerClaimant != null) {
+            val sName = state.getPlayerBySeat(seerClaimant)?.displayName ?: ""
+            "我是${seat}号${player.displayName}，猎人。我站边${seerClaimant + 1}号$sName，${seerClaimant + 1}号的逻辑清晰。"
+        } else {
+            "我是${seat}号${player.displayName}，强神，有身份。先听预言家发言再说。"
+        }
+    }
+
+    private fun generateGuardSpeechV3(player: GamePlayer, state: WolfchaGameState): String {
+        val seat = player.seat + 1
+        val seerClaimant = seerClaimantFromHistory(state)
+        return if (seerClaimant != null) {
+            val sName = state.getPlayerBySeat(seerClaimant)?.displayName ?: ""
+            "我是${seat}号${player.displayName}，守卫。昨夜我守了${seerClaimant + 1}号$sName，他平安夜。"
+        } else {
+            "我是${seat}号${player.displayName}，守卫。今晚我会守人。"
+        }
+    }
+
+    /** 根据某玩家的视角和当前票数，给出投票建议目标（用于 AI 投票决策） */
+    fun suggestVoteTarget(playerId: String): Int? {
+        val state = _gameState.value
+        val player = state.getPlayerById(playerId) ?: return null
+        val aliveOthers = state.alivePlayers.filter { it.playerId != playerId }
+
+        // 预言家优先投查到的狼
+        if (player.role == Role.Seer) {
+            val wolfEntry = state.nightActions.seerHistory
+                .filter { it.isWolf }
+                .firstOrNull { entry ->
+                    state.getPlayerBySeat(entry.targetSeat)?.alive == true
+                }
+            if (wolfEntry != null) return wolfEntry.targetSeat
+        }
+
+        // 狼人优先投当前得票最高的非狼玩家（从众 + 保队友）
+        if (player.role.isWolfRole()) {
+            val nonWolfTargets = state.voteTargetCounts.entries
+                .filter { (seat, _) ->
+                    val p = state.getPlayerBySeat(seat)
+                    p != null && !p.role.isWolfRole()
+                }
+                .sortedByDescending { it.value }
+
+            if (nonWolfTargets.isNotEmpty()) return nonWolfTargets.first().key
+
+            val nonWolf = aliveOthers.filter { !it.role.isWolfRole() }
+            if (nonWolf.isNotEmpty()) return nonWolf.random().seat
+        }
+
+        // 其他人：从众投票当前票数最多的人；没有就随机
+        val maxTarget = state.voteTargetCounts.entries
+            .maxByOrNull { it.value }
+        if (maxTarget != null && maxTarget.value > 0) return maxTarget.key
+
+        return aliveOthers.randomOrNull()?.seat
     }
 }

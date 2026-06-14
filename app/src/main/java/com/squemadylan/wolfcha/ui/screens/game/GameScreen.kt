@@ -46,6 +46,7 @@ fun GameScreen(
     val showRoleReveal by viewModel.showRoleReveal.collectAsState()
     val showNightAction by viewModel.showNightAction.collectAsState()
     val showVoteDialog by viewModel.showVoteDialog.collectAsState()
+    val showResultPanel by viewModel.showResultPanel.collectAsState()
     val currentDialogue by viewModel.currentDialogue.collectAsState()
     val gameEnded by viewModel.gameEnded.collectAsState()
     val winner by viewModel.winner.collectAsState()
@@ -135,7 +136,10 @@ fun GameScreen(
                     onVote = { targetSeat ->
                         viewModel.onHumanVote(targetSeat)
                     },
-                    onSpeechContinue = { viewModel.onSpeechContinue() }
+                    onSpeechContinue = { viewModel.onSpeechContinue() },
+                    showResultPanel = showResultPanel,
+                    onToggleResultPanel = { viewModel.toggleResultPanel() },
+                    onDismissResultPanel = { viewModel.dismissResultPanel() }
                 )
             }
         }
@@ -372,7 +376,10 @@ private fun GamePlayScreen(
     onRequestEndGame: () -> Unit,
     onNightAction: (NightActionType, Int?, Map<String, String>) -> Unit,
     onVote: (Int) -> Unit,
-    onSpeechContinue: () -> Unit
+    onSpeechContinue: () -> Unit,
+    showResultPanel: Boolean,
+    onToggleResultPanel: () -> Unit,
+    onDismissResultPanel: () -> Unit
 ) {
     val isHumanWolf = gameState.isHumanWolf
     val wolfTeammateSeats = gameState.wolfTeammateSeats
@@ -384,7 +391,8 @@ private fun GamePlayScreen(
             gameState = gameState,
             isPaused = isPaused,
             onTogglePause = onTogglePause,
-            onRequestEndGame = onRequestEndGame
+            onRequestEndGame = onRequestEndGame,
+            onToggleResultPanel = onToggleResultPanel
         )
 
         // Player Grid
@@ -438,6 +446,13 @@ private fun GamePlayScreen(
                 onVote = onVote
             )
         }
+
+        if (showResultPanel) {
+            ResultPanel(
+                gameState = gameState,
+                onDismiss = onDismissResultPanel
+            )
+        }
     }
 }
 
@@ -446,7 +461,8 @@ private fun GameTopBar(
     gameState: WolfchaGameState,
     isPaused: Boolean,
     onTogglePause: () -> Unit,
-    onRequestEndGame: () -> Unit
+    onRequestEndGame: () -> Unit,
+    onToggleResultPanel: () -> Unit = {}
 ) {
     Surface(
         color = if (gameState.isNight) NightSurface else DaySurface,
@@ -474,7 +490,7 @@ private fun GameTopBar(
             }
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 StatusBadge(
@@ -485,6 +501,13 @@ private fun GameTopBar(
                     text = "狼: ${gameState.aliveWolves.size}",
                     color = WerewolfRed
                 )
+                IconButton(onClick = onToggleResultPanel) {
+                    Icon(
+                        imageVector = Icons.Default.Description,
+                        contentDescription = "记录",
+                        tint = WolfchaPrimary
+                    )
+                }
                 IconButton(onClick = onTogglePause) {
                     Icon(
                         imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
@@ -766,6 +789,7 @@ private fun findAvatarResource(player: GamePlayer): Int {
     return AvatarCatalog.resourceFor(key, gender)
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun NightActionPanel(
     dialogue: com.squemadylan.wolfcha.ui.viewmodel.DialogueState,
@@ -826,6 +850,14 @@ private fun NightActionPanel(
                     TargetSelector(
                         players = alivePlayers.filter { it.seat != humanPlayer?.seat },
                         onTargetSelected = { selectedTarget = it }
+                    )
+                }
+                NightActionType.SEER_RESULT -> {
+                    Text(
+                        text = "点击「继续」进入天亮阶段",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(vertical = 8.dp)
                     )
                 }
                 NightActionType.SPEECH, NightActionType.LAST_WORDS -> {
@@ -894,6 +926,7 @@ private fun NightActionPanel(
                     enabled = when (dialogue.actionType) {
                         NightActionType.SPEECH, NightActionType.LAST_WORDS -> speechText.isNotBlank()
                         NightActionType.HUNTER_SHOOT, NightActionType.WHITE_WOLF_BOOM -> selectedTarget != null
+                        NightActionType.SEER_RESULT -> true
                         else -> selectedTarget != null
                     },
                     shape = RoundedCornerShape(12.dp),
@@ -1076,16 +1109,338 @@ private fun VotePanel(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ResultPanel(
+    gameState: WolfchaGameState,
+    onDismiss: () -> Unit
+) {
+    var selectedTab by remember { mutableStateOf(0) }
+    val tabs = listOf("投票记录", "出局记录", "我的行动")
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.7f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = DarkCard),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp)
+                .heightIn(max = 600.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 8.dp, top = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "游戏记录",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "关闭",
+                            tint = TextSecondary
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                FlowRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    tabs.forEachIndexed { index, tab ->
+                        TextButton(
+                            onClick = { selectedTab = index },
+                            colors = ButtonDefaults.textButtonColors(
+                                containerColor = if (selectedTab == index) WolfchaPrimary else Color.Transparent,
+                                contentColor = if (selectedTab == index) Color.White else TextSecondary
+                            )
+                        ) {
+                            Text(tab)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                when (selectedTab) {
+                    0 -> VoteRecordContent(gameState)
+                    1 -> DeathRecordContent(gameState)
+                    2 -> PrivateActionRecordContent(gameState)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoteRecordContent(gameState: WolfchaGameState) {
+    val currentDay = gameState.day
+    if (currentDay < 1) {
+        EmptyRecord("暂无投票记录")
+        return
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 380.dp)
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        for (d in 1..currentDay) {
+            val dayVotes = gameState.votesOnDay(d)
+            val executedSeat = gameState.executedSeatOnDay(d)
+            val executedReason = gameState.executedReasonOnDay(d)
+
+            if (dayVotes.isNotEmpty()) {
+                item {
+                    RecordDayCard(
+                        title = "第 $d 天白天",
+                        content = {
+                            Column {
+                                val voteCounts = mutableMapOf<Int, Int>()
+                                dayVotes.values.forEach { seat ->
+                                    voteCounts[seat] = (voteCounts[seat] ?: 0) + 1
+                                }
+                                val sortedTargets = voteCounts.entries
+                                    .sortedByDescending { it.value }
+                                sortedTargets.forEach { (seat, count) ->
+                                    val targetPlayer = gameState.getPlayerBySeat(seat)
+                                    val isExecuted = (seat == executedSeat)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "${seat + 1}号 ${targetPlayer?.displayName ?: ""}",
+                                            color = if (isExecuted) ErrorRed else TextPrimary,
+                                            fontWeight = if (isExecuted) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        StatusBadge(text = "$count 票", color = WolfchaAccent)
+                                        if (isExecuted) {
+                                            Spacer(Modifier.width(6.dp))
+                                            StatusBadge(text = executedReason, color = ErrorRed)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeathRecordContent(gameState: WolfchaGameState) {
+    val currentDay = gameState.day
+    if (currentDay < 1) {
+        EmptyRecord("暂无出局记录")
+        return
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 380.dp)
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        for (d in 1..currentDay) {
+            val nightDeathsList = gameState.nightDeaths[d] ?: emptyList()
+            val executedSeat = gameState.executedSeatOnDay(d)
+            val executedReason = gameState.executedReasonOnDay(d)
+
+            val hasContent = nightDeathsList.isNotEmpty() || executedSeat != null
+
+            if (hasContent) {
+                item {
+                    RecordDayCard(
+                        title = "第 $d 天",
+                        content = {
+                            Column {
+                                if (nightDeathsList.isNotEmpty()) {
+                                    Text(
+                                        text = "夜间",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = WolfchaSecondary,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(bottom = 4.dp)
+                                    )
+                                    nightDeathsList.forEach { (seat, reason) ->
+                                        val player = gameState.getPlayerBySeat(seat)
+                                        Row(
+                                            modifier = Modifier.padding(vertical = 3.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "${seat + 1}号 ${player?.displayName ?: ""}",
+                                                color = TextPrimary
+                                            )
+                                            Spacer(Modifier.width(8.dp))
+                                            StatusBadge(text = reason, color = ErrorRed)
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                }
+
+                                if (executedSeat != null) {
+                                    Text(
+                                        text = "白天",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = WolfchaAccent,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(bottom = 4.dp)
+                                    )
+                                    val player = gameState.getPlayerBySeat(executedSeat)
+                                    Row(
+                                        modifier = Modifier.padding(vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "${executedSeat + 1}号 ${player?.displayName ?: ""}",
+                                            color = TextPrimary
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        StatusBadge(text = executedReason, color = ErrorRed)
+                                    }
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrivateActionRecordContent(gameState: WolfchaGameState) {
+    val humanPlayer = gameState.humanPlayer
+    val humanRole = humanPlayer?.role?.toString() ?: ""
+    val seerHistory = gameState.nightActions.seerHistory
+
+    val hasSeerInfo = (humanRole.contains("SEER", ignoreCase = true)) && seerHistory.isNotEmpty()
+
+    if (!hasSeerInfo) {
+        EmptyRecord("你当前没有专属行动记录\n（预言家查验、女巫救/毒等仅对本人可见）")
+        return
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 380.dp)
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (hasSeerInfo) {
+            item {
+                RecordDayCard(
+                    title = "🔮 预言家查验记录",
+                    content = {
+                        Column {
+                            seerHistory.sortedBy { it.day }.forEach { entry ->
+                                val targetPlayer = gameState.getPlayerBySeat(entry.targetSeat)
+                                Row(
+                                    modifier = Modifier.padding(vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "第${entry.day}晚 查 ${entry.targetSeat + 1}号 ${targetPlayer?.displayName ?: ""}",
+                                        color = TextPrimary
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    StatusBadge(
+                                        text = if (entry.isWolf) "狼人" else "好人",
+                                        color = if (entry.isWolf) ErrorRed else SuccessGreen
+                                    )
+                                }
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecordDayCard(
+    title: String,
+    content: @Composable () -> Unit
+) {
+    Surface(
+        color = Color(0xFF2A2D35),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                color = WolfchaPrimary,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+            content()
+        }
+    }
+}
+
+@Composable
+private fun EmptyRecord(text: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = text,
+            color = TextSecondary,
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun VoteRecordPanel(
     gameState: WolfchaGameState,
     isHumanWolf: Boolean,
     wolfTeammateSeats: Set<Int>
 ) {
-    val voteMap = gameState.votes
     val playerMap = gameState.players.associateBy { it.playerId }
 
-    if (voteMap.isEmpty()) {
+    val hasCurrentVotes = gameState.votes.isNotEmpty()
+    val hasHistory = gameState.voteHistory.isNotEmpty()
+
+    if (!hasCurrentVotes && !hasHistory) {
         Surface(
             color = if (gameState.isNight) NightSurface else DaySurface,
             tonalElevation = 2.dp
@@ -1113,85 +1468,209 @@ private fun VoteRecordPanel(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp)
         ) {
-            Text(
-                text = "本轮投票",
-                style = MaterialTheme.typography.titleSmall,
-                color = TextPrimary,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                val sortedVotes = voteMap.entries.sortedBy { entry ->
-                    playerMap[entry.key]?.seat ?: 0
-                }
-                sortedVotes.forEach { (voterId, targetSeat) ->
-                    val voter = playerMap[voterId]
-                    val target = gameState.getPlayerBySeat(targetSeat)
-                    val isTeammateVote = isHumanWolf &&
-                        (wolfTeammateSeats.contains(voter?.seat) || voter?.isHuman == true)
-                    val bgColor = if (isTeammateVote) {
-                        WerewolfRed.copy(alpha = 0.25f)
-                    } else {
-                        WolfchaPrimary.copy(alpha = 0.15f)
-                    }
-                    val textColor = if (isTeammateVote) WerewolfRed else WolfchaPrimary
-                    Surface(
-                        color = bgColor,
-                        shape = RoundedCornerShape(8.dp)
+            // ===== 历史投票记录（每天一轮） =====
+            if (hasHistory) {
+                val sortedDays = gameState.voteHistory.keys.sorted()
+                sortedDays.forEach { day ->
+                    val dayVotes = gameState.voteHistory[day] ?: emptyMap()
+                    if (dayVotes.isEmpty()) return@forEach
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "${(voter?.seat?.plus(1)) ?: "?"}号 → " +
-                                "${targetSeat + 1}号 ${target?.displayName ?: ""}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = textColor,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            fontWeight = if (isTeammateVote) FontWeight.Bold else FontWeight.Normal
-                        )
+                        Surface(
+                            color = WolfchaPrimary.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = "第 ${day} 天投票",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = WolfchaPrimary,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                        // 被投出局的人
+                        gameState.executedHistory[day]?.let { executedSeat ->
+                            Spacer(modifier = Modifier.width(8.dp))
+                            val executedName = gameState.getPlayerBySeat(executedSeat)?.displayName ?: ""
+                            val voteCountForExecuted = dayVotes.values.count { it == executedSeat }
+                            Surface(
+                                color = ErrorRed.copy(alpha = 0.2f),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = "→ ${executedSeat + 1}号 $executedName 出局（${voteCountForExecuted}票）",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ErrorRed,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
                     }
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        val sortedVotes = dayVotes.entries.sortedBy { entry ->
+                            playerMap[entry.key]?.seat ?: 0
+                        }
+                        sortedVotes.forEach { (voterId, targetSeat) ->
+                            val voter = playerMap[voterId]
+                            val target = gameState.getPlayerBySeat(targetSeat)
+                            val isTeammateVote = isHumanWolf &&
+                                (wolfTeammateSeats.contains(voter?.seat) || voter?.isHuman == true)
+                            val bgColor = if (isTeammateVote) {
+                                WerewolfRed.copy(alpha = 0.25f)
+                            } else {
+                                WolfchaPrimary.copy(alpha = 0.12f)
+                            }
+                            val textColor = if (isTeammateVote) WerewolfRed else WolfchaPrimary
+                            Surface(
+                                color = bgColor,
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = "${(voter?.seat?.plus(1)) ?: "?"}号 → " +
+                                        "${targetSeat + 1}号 ${target?.displayName ?: ""}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = textColor,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                    fontWeight = if (isTeammateVote) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    // 当天得票统计
+                    val counts = dayVotes.values.groupingBy { it }.eachCount()
+                        .entries.sortedByDescending { it.value }
+                    if (counts.isNotEmpty()) {
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            counts.forEach { (seat, cnt) ->
+                                val tp = gameState.getPlayerBySeat(seat)
+                                Surface(
+                                    color = if (gameState.executedHistory[day] == seat)
+                                        ErrorRed.copy(alpha = 0.3f)
+                                    else ErrorRed.copy(alpha = 0.15f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = "${seat + 1}号 ${tp?.displayName ?: ""}: ${cnt}票",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = ErrorRed,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                        fontWeight = if (gameState.executedHistory[day] == seat)
+                                            FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    HorizontalDivider(
+                        color = TextMuted.copy(alpha = 0.2f),
+                        thickness = 0.5.dp,
+                        modifier = Modifier.padding(vertical = 6.dp)
+                    )
                 }
             }
 
-            // Vote count summary
-            val voteCounts = mutableMapOf<Int, Int>()
-            voteMap.values.forEach { seat ->
-                voteCounts[seat] = (voteCounts[seat] ?: 0) + 1
-            }
-            if (voteCounts.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(6.dp))
+            // ===== 当前轮（未结算）投票 =====
+            if (hasCurrentVotes) {
                 Text(
-                    text = "得票统计",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary
+                    text = "本轮投票（进行中）",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold
                 )
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    voteCounts.entries
-                        .sortedByDescending { it.value }
-                        .forEach { (seat, count) ->
-                            val targetPlayer = gameState.getPlayerBySeat(seat)
-                            Surface(
-                                color = ErrorRed.copy(alpha = 0.2f),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Text(
-                                    text = "${seat + 1}号 ${targetPlayer?.displayName ?: ""}: ${count}票",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = ErrorRed,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
+                    val sortedVotes = gameState.votes.entries.sortedBy { entry ->
+                        playerMap[entry.key]?.seat ?: 0
+                    }
+                    sortedVotes.forEach { (voterId, targetSeat) ->
+                        val voter = playerMap[voterId]
+                        val target = gameState.getPlayerBySeat(targetSeat)
+                        val isTeammateVote = isHumanWolf &&
+                            (wolfTeammateSeats.contains(voter?.seat) || voter?.isHuman == true)
+                        val bgColor = if (isTeammateVote) {
+                            WerewolfRed.copy(alpha = 0.25f)
+                        } else {
+                            WolfchaPrimary.copy(alpha = 0.15f)
                         }
+                        val textColor = if (isTeammateVote) WerewolfRed else WolfchaPrimary
+                        Surface(
+                            color = bgColor,
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = "${(voter?.seat?.plus(1)) ?: "?"}号 → " +
+                                    "${targetSeat + 1}号 ${target?.displayName ?: ""}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = textColor,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                fontWeight = if (isTeammateVote) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+
+                val voteCounts = mutableMapOf<Int, Int>()
+                gameState.votes.values.forEach { seat ->
+                    voteCounts[seat] = (voteCounts[seat] ?: 0) + 1
+                }
+                if (voteCounts.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "得票统计",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        voteCounts.entries
+                            .sortedByDescending { it.value }
+                            .forEach { (seat, count) ->
+                                val targetPlayer = gameState.getPlayerBySeat(seat)
+                                val topColor = if (count == voteCounts.values.maxOrNull()) {
+                                    ErrorRed
+                                } else {
+                                    ErrorRed.copy(alpha = 0.7f)
+                                }
+                                Surface(
+                                    color = topColor.copy(alpha = 0.2f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(
+                                        text = "${seat + 1}号 ${targetPlayer?.displayName ?: ""}: ${count}票",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = topColor,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                    }
                 }
             }
         }

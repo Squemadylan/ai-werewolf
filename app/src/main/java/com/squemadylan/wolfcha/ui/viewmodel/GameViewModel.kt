@@ -61,6 +61,9 @@ class GameViewModel(
     private val _showVoteDialog = MutableStateFlow(false)
     val showVoteDialog: StateFlow<Boolean> = _showVoteDialog.asStateFlow()
 
+    private val _showResultPanel = MutableStateFlow(false)
+    val showResultPanel: StateFlow<Boolean> = _showResultPanel.asStateFlow()
+
     private val _waitingForSpeechContinue = MutableStateFlow(false)
     val waitingForSpeechContinue: StateFlow<Boolean> = _waitingForSpeechContinue.asStateFlow()
 
@@ -130,6 +133,14 @@ class GameViewModel(
         _waitingForSpeechContinue.value = false
         _showNightAction.value = false
         _currentDialogue.value = null
+    }
+
+    fun toggleResultPanel() {
+        _showResultPanel.value = !_showResultPanel.value
+    }
+
+    fun dismissResultPanel() {
+        _showResultPanel.value = false
     }
 
     fun startNewGame(settings: GameSettings? = null) {
@@ -318,17 +329,12 @@ class GameViewModel(
         _showNightAction.value = false
         val (_, nightDeaths) = gameEngine.resolveNight()
 
-        val deathMessages = nightDeaths.map { (seat, reason) ->
+        val deathMessages = nightDeaths.map { (seat, _) ->
             val player = gameEngine.gameState.value.getPlayerBySeat(seat)
-            val reasonText = when (reason) {
-                "wolf" -> "被狼人杀害"
-                "poison" -> "被女巫毒死"
-                else -> "死亡"
-            }
-            "${seat + 1}号 ${player?.displayName ?: ""} $reasonText"
+            "${seat + 1}号 ${player?.displayName ?: ""} 死亡了"
         }
         if (deathMessages.isNotEmpty()) {
-            announceSystem("天亮了，昨晚：")
+            announceSystem("天亮了，昨晚有人死亡：")
             deathMessages.forEach { announceSystem(it) }
         } else {
             announceSystem("天亮了，昨晚是平安夜")
@@ -565,8 +571,19 @@ class GameViewModel(
         val speech = gameEngine.generateAISpeech(player.playerId)
         gameEngine.addPlayerMessage(player.playerId, speech)
         announcePlayerSpeech(player, speech)
-        delay(800)
-        if (!activeOrAbort(session)) return
+
+        _showNightAction.value = true
+        _waitingForSpeechContinue.value = true
+        _currentDialogue.value = DialogueState(
+            speaker = player.displayName,
+            text = speech,
+            actionType = NightActionType.AI_SPEECH_CONTINUE,
+            extraData = mapOf("role" to "last_words")
+        )
+        while (_waitingForSpeechContinue.value) {
+            delay(100)
+            if (session != captureSession() || _gameEnded.value) return
+        }
         onComplete()
     }
 
@@ -757,6 +774,20 @@ class GameViewModel(
                 }
                 NightActionType.SEER -> {
                     targetSeat?.let { gameEngine.performNightActionSeer(it) }
+                    val result = gameEngine.gameState.value.nightActions.seerHistory.lastOrNull()
+                    if (result != null) {
+                        val targetPlayer = gameEngine.gameState.value.getPlayerBySeat(result.targetSeat)
+                        val resultText = if (result.isWolf) "狼人" else "好人阵营"
+                        _currentDialogue.value = DialogueState(
+                            speaker = "系统",
+                            text = "查验结果：${result.targetSeat + 1}号 ${targetPlayer?.displayName ?: ""} 是$resultText",
+                            actionType = NightActionType.SEER_RESULT
+                        )
+                    }
+                }
+                NightActionType.SEER_RESULT -> {
+                    _showNightAction.value = false
+                    _currentDialogue.value = null
                     continueToDayPhase(session)
                 }
                 NightActionType.SPEECH -> {
@@ -814,15 +845,15 @@ class GameViewModel(
 
     private suspend fun castAiVotes(session: Int) {
         if (!activeOrAbort(session)) return
-        val state = gameEngine.gameState.value
-        for (player in state.alivePlayers) {
+        for (player in gameEngine.gameState.value.alivePlayers) {
             if (player.isHuman) continue
-            val targetSeat = nightAiDecision.pickVoteTarget(
-                state = gameEngine.gameState.value,
-                voter = player,
-                difficulty = state.difficulty,
-                llmConfig = llmConfigCached
-            )
+            val targetSeat = gameEngine.suggestVoteTarget(player.playerId)
+                ?: nightAiDecision.pickVoteTarget(
+                    state = gameEngine.gameState.value,
+                    voter = player,
+                    difficulty = gameEngine.gameState.value.difficulty,
+                    llmConfig = llmConfigCached
+                )
             targetSeat?.let { gameEngine.castVote(player.playerId, it) }
         }
     }
@@ -876,6 +907,7 @@ enum class NightActionType {
     WOLF,
     WITCH,
     SEER,
+    SEER_RESULT,
     SPEECH,
     LAST_WORDS,
     HUNTER_SHOOT,
