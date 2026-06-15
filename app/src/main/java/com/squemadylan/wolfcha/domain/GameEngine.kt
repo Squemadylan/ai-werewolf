@@ -168,6 +168,7 @@ class GameEngine(
 
     fun performNightActionGuard(targetSeat: Int): WolfchaGameState {
         val currentState = _gameState.value
+        // 历史记录统一在 resolveNight() 中写入，避免重复记录
         val newState = currentState.copy(
             nightActions = currentState.nightActions.copy(
                 guardTarget = targetSeat,
@@ -180,6 +181,7 @@ class GameEngine(
 
     fun performNightActionWolf(targetSeat: Int): WolfchaGameState {
         val currentState = _gameState.value
+        // 历史记录（含是否真正击杀）统一在 resolveNight() 中写入，避免重复记录
         val newState = currentState.copy(
             nightActions = currentState.nightActions.copy(
                 wolfTarget = targetSeat
@@ -236,21 +238,38 @@ class GameEngine(
     fun resolveNight(): Pair<WolfchaGameState, List<Pair<Int, String>>> {
         val currentState = _gameState.value
         val nightActions = currentState.nightActions
+        val day = currentState.day
 
-        val deaths = mutableListOf<Pair<Int, String>>()
         var roleAbilities = currentState.roleAbilities
 
         val wolfTarget = nightActions.wolfTarget
         val guardTarget = nightActions.guardTarget
         val witchSave = nightActions.witchSave
+        val witchPoison = nightActions.witchPoison
 
-        if (wolfTarget != null && wolfTarget != guardTarget && witchSave != true) {
-            deaths.add(wolfTarget to "wolf")
+        val deaths = computeNightDeaths(nightActions).toMutableList()
+
+        // === 记录夜间行动历史（保留，不会被 reset）===
+        val newWolfKillHistory = nightActions.wolfKillHistory.toMutableList()
+        if (wolfTarget != null) {
+            val actuallyKilled = wolfTarget != guardTarget && witchSave != true
+            newWolfKillHistory.add(WolfKillEntry(day, wolfTarget, actuallyKilled))
         }
 
-        val witchPoison = nightActions.witchPoison
-        if (witchPoison != null) {
-            deaths.add(witchPoison to "poison")
+        val newWitchActionHistory = nightActions.witchActionHistory.toMutableList()
+        if (witchSave != null || witchPoison != null) {
+            newWitchActionHistory.add(
+                WitchActionEntry(
+                    day,
+                    if (witchSave == true) wolfTarget else null,
+                    witchPoison
+                )
+            )
+        }
+
+        val newGuardActionHistory = nightActions.guardActionHistory.toMutableList()
+        if (guardTarget != null) {
+            newGuardActionHistory.add(GuardActionEntry(day, guardTarget))
         }
 
         val newPlayers = currentState.players.toMutableList()
@@ -275,8 +294,13 @@ class GameEngine(
         val newState = currentState.copy(
             players = newPlayers,
             phase = Phase.DAY_START,
+            // === reset 当夜晚的临时字段，但保留历史记录 ===
             nightActions = NightActions(
-                lastGuardTarget = nightActions.guardTarget
+                lastGuardTarget = nightActions.guardTarget,
+                seerHistory = nightActions.seerHistory,
+                wolfKillHistory = newWolfKillHistory,
+                witchActionHistory = newWitchActionHistory,
+                guardActionHistory = newGuardActionHistory
             ),
             roleAbilities = roleAbilities,
             nightDeaths = newNightDeaths
@@ -289,6 +313,12 @@ class GameEngine(
 
     fun castVote(voterId: String, targetSeat: Int): WolfchaGameState {
         val currentState = _gameState.value
+        // 已翻牌白痴永久失去投票权
+        val voter = currentState.getPlayerById(voterId)
+        if (voter != null && voter.role == Role.Idiot && currentState.roleAbilities.idiotRevealed) {
+            return currentState
+        }
+
         val newVotes = currentState.votes.toMutableMap()
         newVotes[voterId] = targetSeat
 
@@ -296,6 +326,9 @@ class GameEngine(
         _gameState.value = newState
         return newState
     }
+
+    /** 该玩家当前是否有投票权（已翻牌白痴没有）。 */
+    fun canVote(player: GamePlayer): Boolean = canVote(player, _gameState.value)
 
     fun resolveVotes(): Pair<WolfchaGameState, Int?> {
         val currentState = _gameState.value
@@ -305,16 +338,9 @@ class GameEngine(
             return currentState.copy(phase = Phase.DAY_RESOLVE) to null
         }
 
-        val voteCounts = mutableMapOf<Int, Int>()
-        votes.values.forEach { seat ->
-            voteCounts[seat] = (voteCounts[seat] ?: 0) + 1
-        }
+        val (executedSeat, _) = computeExecutedSeat(votes)
 
-        val maxVotes = voteCounts.maxByOrNull { it.value }
-        val totalVotes = votes.size
-        val isTie = voteCounts.values.count { it == maxVotes?.value } > 1
-
-        return if (isTie || maxVotes == null) {
+        return if (executedSeat == null) {
             val newState = currentState.copy(
                 phase = Phase.DAY_RESOLVE,
                 voteHistory = currentState.voteHistory + (currentState.day to votes)
@@ -322,11 +348,10 @@ class GameEngine(
             _gameState.value = newState
             newState to null
         } else {
-            val executedSeat = maxVotes.key
+            val voteCount = votes.values.count { it == executedSeat }
             val newExecutedHistory = currentState.executedHistory.toMutableMap()
             newExecutedHistory[currentState.day] = executedSeat
-            val executedPlayer = currentState.getPlayerBySeat(executedSeat)
-            val reason = "被投票出局（${maxVotes.value}票）"
+            val reason = "被投票出局（${voteCount}票）"
             val newReasonHistory = currentState.executedReasonHistory.toMutableMap()
             newReasonHistory[currentState.day] = reason
 
@@ -356,6 +381,29 @@ class GameEngine(
         return newState
     }
 
+    /** 设置警长竞选的上警候选人（座位号集合）。 */
+    fun setBadgeCandidates(seats: List<Int>): WolfchaGameState {
+        val currentState = _gameState.value
+        val newState = currentState.copy(
+            badge = currentState.badge.copy(candidates = seats.distinct().sorted())
+        )
+        _gameState.value = newState
+        return newState
+    }
+
+    /** 追加一名上警候选人。 */
+    fun addBadgeCandidate(seat: Int): WolfchaGameState {
+        val currentState = _gameState.value
+        if (seat in currentState.badge.candidates) return currentState
+        val newState = currentState.copy(
+            badge = currentState.badge.copy(
+                candidates = (currentState.badge.candidates + seat).distinct().sorted()
+            )
+        )
+        _gameState.value = newState
+        return newState
+    }
+
     fun revealIdiot(seat: Int): WolfchaGameState {
         val currentState = _gameState.value
         val newState = currentState.copy(
@@ -374,17 +422,15 @@ class GameEngine(
         return newState
     }
 
-    fun checkWinCondition(): Alignment? {
-        val currentState = _gameState.value
-        val aliveWolves = currentState.aliveWolves.size
-        val aliveVillagers = currentState.aliveVillagers.size
-
-        return when {
-            aliveWolves == 0 -> Alignment.VILLAGE
-            aliveWolves >= aliveVillagers -> Alignment.WOLF
-            else -> null
-        }
-    }
+    /**
+     * 屠边胜负判定：
+     * - 狼人全部死亡 → 好人胜
+     * - 全部神职死亡（屠神）或 全部平民死亡（屠民） → 狼人胜
+     * - 否则游戏继续（不提前结束）
+     *
+     * 白痴归类为神职。
+     */
+    fun checkWinCondition(): Alignment? = evaluateWinner(_gameState.value)
 
     fun killPlayer(seat: Int): WolfchaGameState {
         val currentState = _gameState.value
@@ -740,5 +786,65 @@ class GameEngine(
         if (maxTarget != null && maxTarget.value > 0) return maxTarget.key
 
         return aliveOthers.randomOrNull()?.seat
+    }
+
+    // ==========================================================================
+    // 纯函数（无状态副作用，便于单元测试）
+    // ==========================================================================
+    companion object {
+
+        /**
+         * 屠边胜负判定：
+         * - 狼人全部死亡 → 好人胜
+         * - 全部神职死亡（屠神）或全部平民死亡（屠民） → 狼人胜
+         * - 否则返回 null（游戏继续）
+         * 白痴归类为神职。
+         */
+        fun evaluateWinner(state: WolfchaGameState): Alignment? {
+            val aliveWolves = state.players.count { it.alive && it.role.isWolfRole() }
+            if (aliveWolves == 0) return Alignment.VILLAGE
+
+            val aliveGods = state.players.count { it.alive && it.role.isGodRole() }
+            val aliveCivilians = state.players.count { it.alive && it.role.isCivilianRole() }
+            return if (aliveGods == 0 || aliveCivilians == 0) Alignment.WOLF else null
+        }
+
+        /**
+         * 计算一夜的死亡（座位号 to 死因）。
+         * - 狼刀目标：若未被守卫守护且未被女巫解药救，则死亡（reason="wolf"）
+         * - 女巫毒药目标：死亡（reason="poison"）
+         */
+        fun computeNightDeaths(nightActions: NightActions): List<Pair<Int, String>> {
+            val deaths = mutableListOf<Pair<Int, String>>()
+            val wolfTarget = nightActions.wolfTarget
+            if (wolfTarget != null &&
+                wolfTarget != nightActions.guardTarget &&
+                nightActions.witchSave != true
+            ) {
+                deaths.add(wolfTarget to "wolf")
+            }
+            nightActions.witchPoison?.let { deaths.add(it to "poison") }
+            return deaths
+        }
+
+        /**
+         * 根据投票统计出局者。
+         * @return Pair(出局座位号或 null, 是否平票)
+         */
+        fun computeExecutedSeat(votes: Map<String, Int>): Pair<Int?, Boolean> {
+            if (votes.isEmpty()) return null to false
+            val counts = mutableMapOf<Int, Int>()
+            votes.values.forEach { seat -> counts[seat] = (counts[seat] ?: 0) + 1 }
+            val max = counts.maxByOrNull { it.value } ?: return null to false
+            val isTie = counts.values.count { it == max.value } > 1
+            return if (isTie) null to true else max.key to false
+        }
+
+        /** 该玩家当前是否有投票权（已翻牌白痴没有）。 */
+        fun canVote(player: GamePlayer, state: WolfchaGameState): Boolean {
+            if (!player.alive) return false
+            if (player.role == Role.Idiot && state.roleAbilities.idiotRevealed) return false
+            return true
+        }
     }
 }

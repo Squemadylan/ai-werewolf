@@ -43,6 +43,9 @@ class GameViewModel(
 
     private var speechCursor: Int = 0
 
+    private val _isExecutingNightAction = MutableStateFlow(false)
+    private val isExecutingNightAction: StateFlow<Boolean> = _isExecutingNightAction.asStateFlow()
+
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
@@ -382,21 +385,180 @@ class GameViewModel(
         runDaySpeech(session)
     }
 
+    private var badgeSpeechCursor: Int = 0
+
+    /** 警长竞选第一步：上警举手报名。 */
     private suspend fun runSheriffElection(session: Int) {
         if (!activeOrAbort(session)) return
+        gameEngine.transitionPhase(Phase.DAY_BADGE_SIGNUP)
+        announceSystem("第1天警长竞选开始，请选择是否上警（上警者将依次发言并接受场下投票）")
+        delay(800)
+        if (!activeOrAbort(session)) return
+
+        // AI 玩家决定是否上警
+        gameEngine.setBadgeCandidates(aiBadgeSignupSeats())
+
+        val human = gameEngine.gameState.value.humanPlayer
+        if (human?.alive == true) {
+            _showNightAction.value = true
+            _currentDialogue.value = DialogueState(
+                speaker = "系统",
+                text = "警长竞选：你要上警竞选警长吗？",
+                actionType = NightActionType.BADGE_SIGNUP
+            )
+            return
+        }
+        proceedBadgeSpeech(session)
+    }
+
+    /** AI 是否上警的概率（按角色定位）。 */
+    private fun aiBadgeSignupSeats(): List<Int> {
+        val state = gameEngine.gameState.value
+        val seats = mutableListOf<Int>()
+        for (p in state.alivePlayers) {
+            if (p.isHuman) continue
+            val prob = when {
+                p.role == Role.Seer -> 0.9
+                p.role.isGodRole() -> 0.55
+                p.role.isWolfRole() -> 0.5
+                else -> 0.3
+            }
+            if (Math.random() < prob) seats.add(p.seat)
+        }
+        return seats
+    }
+
+    private suspend fun proceedBadgeSpeech(session: Int) {
+        if (!activeOrAbort(session)) return
+        _showNightAction.value = false
+        val candidates = gameEngine.gameState.value.badge.candidates
+        if (candidates.isEmpty()) {
+            announceSystem("无人上警，本局没有警长")
+            delay(800)
+            if (!activeOrAbort(session)) return
+            startNormalDaySpeech(session)
+            return
+        }
+
+        val names = candidates.joinToString("、") { seat ->
+            val p = gameEngine.gameState.value.getPlayerBySeat(seat)
+            "${seat + 1}号${p?.displayName ?: ""}"
+        }
+        announceSystem("上警玩家：$names，请依次进行竞选发言")
+        gameEngine.transitionPhase(Phase.DAY_BADGE_SPEECH)
+        badgeSpeechCursor = 0
+        runBadgeSpeech(session)
+    }
+
+    private suspend fun runBadgeSpeech(session: Int) {
+        if (!activeOrAbort(session)) return
+        val candidates = gameEngine.gameState.value.badge.candidates.sorted()
+
+        var index = badgeSpeechCursor.coerceAtLeast(0)
+        while (index < candidates.size) {
+            if (!activeOrAbort(session)) return
+            val seat = candidates[index]
+            val player = gameEngine.gameState.value.getPlayerBySeat(seat)
+            if (player == null || !player.alive) {
+                index += 1
+                continue
+            }
+
+            if (player.isHuman) {
+                badgeSpeechCursor = index + 1
+                _showNightAction.value = true
+                _currentDialogue.value = DialogueState(
+                    speaker = "系统",
+                    text = "轮到你进行警长竞选发言",
+                    actionType = NightActionType.SPEECH,
+                    extraData = mapOf("context" to "badge")
+                )
+                return
+            } else {
+                announceSystem("请${player.seat + 1}号 ${player.displayName} 进行竞选发言")
+                _currentDialogue.value = DialogueState(
+                    speaker = player.displayName,
+                    text = "正在思考…",
+                    actionType = NightActionType.NONE
+                )
+                val speech = gameEngine.generateAISpeech(player.playerId)
+                gameEngine.addPlayerMessage(player.playerId, speech)
+                announcePlayerSpeech(player, speech)
+                _showNightAction.value = true
+                _waitingForSpeechContinue.value = true
+                _currentDialogue.value = DialogueState(
+                    speaker = player.displayName,
+                    text = speech,
+                    actionType = NightActionType.AI_SPEECH_CONTINUE
+                )
+                while (_waitingForSpeechContinue.value) {
+                    delay(100)
+                    if (session != captureSession() || _gameEnded.value) return
+                }
+                index += 1
+                badgeSpeechCursor = index
+            }
+        }
+
+        badgeSpeechCursor = 0
+        runBadgeVote(session)
+    }
+
+    private suspend fun runBadgeVote(session: Int) {
+        if (!activeOrAbort(session)) return
+        gameEngine.clearVotes()
         gameEngine.transitionPhase(Phase.DAY_BADGE_ELECTION)
-        announceSystem("第1天警长竞选，请全体玩家投票")
+        announceSystem("竞选发言结束，请场下玩家投票选出警长")
 
         val state = gameEngine.gameState.value
-        if (state.humanPlayer?.alive == true) {
+        val human = state.humanPlayer
+        val humanCanVote = human?.alive == true &&
+            human.seat !in state.badge.candidates &&
+            gameEngine.canVote(human)
+        if (humanCanVote) {
             _showVoteDialog.value = true
             return
         }
 
         delay(1000)
         if (!activeOrAbort(session)) return
-        castAiVotes(session)
+        castAiBadgeVotes(session)
         resolveVote(session, isBadgeElection = true)
+    }
+
+    private suspend fun castAiBadgeVotes(session: Int) {
+        if (!activeOrAbort(session)) return
+        val state = gameEngine.gameState.value
+        val candidates = state.badge.candidates
+        if (candidates.isEmpty()) return
+        for (player in state.alivePlayers) {
+            if (player.isHuman) continue
+            if (player.seat in candidates) continue // 上警者不投票
+            if (!gameEngine.canVote(player)) continue
+            val target = if (player.role.isWolfRole()) {
+                // 狼优先把警徽投给狼候选人，没有则随机
+                candidates.firstOrNull { seat ->
+                    state.getPlayerBySeat(seat)?.role?.isWolfRole() == true
+                } ?: candidates.random()
+            } else {
+                candidates.random()
+            }
+            gameEngine.castVote(player.playerId, target)
+        }
+    }
+
+    private suspend fun startNormalDaySpeech(session: Int) {
+        if (!activeOrAbort(session)) return
+        val state = gameEngine.gameState.value
+        gameEngine.transitionPhase(Phase.DAY_SPEECH)
+        val startSeat = state.badge.holderSeat
+            ?: state.alivePlayers.minByOrNull { it.seat }?.seat
+        if (startSeat != null) {
+            gameEngine.setDaySpeechStartSeat(startSeat)
+        }
+        announceSystem("第 ${state.day} 天白天，请大家依次发言")
+        speechCursor = 0
+        runDaySpeech(session)
     }
 
     private suspend fun runDaySpeech(session: Int) {
@@ -471,7 +633,8 @@ class GameViewModel(
         announceSystem("发言结束，请大家投票")
 
         val state = gameEngine.gameState.value
-        if (state.humanPlayer?.alive == true) {
+        val human = state.humanPlayer
+        if (human != null && gameEngine.canVote(human)) {
             _showVoteDialog.value = true
             return
         }
@@ -492,14 +655,14 @@ class GameViewModel(
             if (executedSeat != null) {
                 gameEngine.setBadgeHolder(executedSeat)
                 val player = newState.getPlayerBySeat(executedSeat)
-                announceSystem("${executedSeat + 1}号 ${player?.displayName ?: ""} 成为警长")
+                announceSystem("${executedSeat + 1}号 ${player?.displayName ?: ""} 当选警长")
             } else {
                 announceSystem("警长竞选投票平局，本局无警长")
             }
             gameEngine.clearVotes()
-            gameEngine.transitionPhase(Phase.DAY_SPEECH)
-            announceSystem("第 ${gameEngine.gameState.value.day} 天白天，请大家依次发言")
-            runDaySpeech(session)
+            delay(800)
+            if (!activeOrAbort(session)) return
+            startNormalDaySpeech(session)
             return
         }
 
@@ -756,46 +919,64 @@ class GameViewModel(
         extraData: Map<String, String> = emptyMap()
     ) {
         viewModelScope.launch {
-            val session = captureSession()
-            when (action) {
-                NightActionType.GUARD -> {
-                    targetSeat?.let { gameEngine.performNightActionGuard(it) }
-                    continueToWolfPhase(session)
-                }
-                NightActionType.WOLF -> {
-                    targetSeat?.let { gameEngine.performNightActionWolf(it) }
-                    continueToWitchPhase(session)
-                }
-                NightActionType.WITCH -> {
-                    val save = extraData["save"]?.toBoolean() ?: false
-                    val poison = extraData["poison"]?.toIntOrNull()
-                    gameEngine.performNightActionWitch(save, poison)
-                    continueToSeerPhase(session)
-                }
-                NightActionType.SEER -> {
-                    targetSeat?.let { gameEngine.performNightActionSeer(it) }
-                    val result = gameEngine.gameState.value.nightActions.seerHistory.lastOrNull()
-                    if (result != null) {
-                        val targetPlayer = gameEngine.gameState.value.getPlayerBySeat(result.targetSeat)
-                        val resultText = if (result.isWolf) "狼人" else "好人阵营"
-                        _currentDialogue.value = DialogueState(
-                            speaker = "系统",
-                            text = "查验结果：${result.targetSeat + 1}号 ${targetPlayer?.displayName ?: ""} 是$resultText",
-                            actionType = NightActionType.SEER_RESULT
-                        )
+            if (_isExecutingNightAction.value) {
+                return@launch
+            }
+            _isExecutingNightAction.value = true
+            try {
+                val session = captureSession()
+                when (action) {
+                    NightActionType.GUARD -> {
+                        targetSeat?.let { gameEngine.performNightActionGuard(it) }
+                        continueToWolfPhase(session)
                     }
-                }
-                NightActionType.SEER_RESULT -> {
+                    NightActionType.WOLF -> {
+                        targetSeat?.let { gameEngine.performNightActionWolf(it) }
+                        continueToWitchPhase(session)
+                    }
+                    NightActionType.WITCH -> {
+                        val save = extraData["save"]?.toBoolean() ?: false
+                        val poison = extraData["poison"]?.toIntOrNull()
+                        gameEngine.performNightActionWitch(save, poison)
+                        continueToSeerPhase(session)
+                    }
+                    NightActionType.SEER -> {
+                        targetSeat?.let { gameEngine.performNightActionSeer(it) }
+                        val result = gameEngine.gameState.value.nightActions.seerHistory.lastOrNull()
+                        if (result != null) {
+                            val targetPlayer = gameEngine.gameState.value.getPlayerBySeat(result.targetSeat)
+                            val resultText = if (result.isWolf) "狼人" else "好人阵营"
+                            _currentDialogue.value = DialogueState(
+                                speaker = "系统",
+                                text = "查验结果：${result.targetSeat + 1}号 ${targetPlayer?.displayName ?: ""} 是$resultText",
+                                actionType = NightActionType.SEER_RESULT
+                            )
+                        }
+                    }
+                    NightActionType.SEER_RESULT -> {
+                        _showNightAction.value = false
+                        _currentDialogue.value = null
+                        continueToDayPhase(session)
+                    }
+                NightActionType.BADGE_SIGNUP -> {
+                    val signup = extraData["signup"]?.toBoolean() ?: false
+                    val humanSeat = gameState.value.humanPlayer?.seat
+                    if (signup && humanSeat != null) {
+                        gameEngine.addBadgeCandidate(humanSeat)
+                    }
                     _showNightAction.value = false
-                    _currentDialogue.value = null
-                    continueToDayPhase(session)
+                    proceedBadgeSpeech(session)
                 }
                 NightActionType.SPEECH -> {
                     val speech = extraData["speech"] ?: "..."
                     val human = gameState.value.humanPlayer
                     human?.let { gameEngine.addPlayerMessage(it.playerId, speech) }
                     _showNightAction.value = false
-                    runDaySpeech(session)
+                    if (extraData["context"] == "badge") {
+                        runBadgeSpeech(session)
+                    } else {
+                        runDaySpeech(session)
+                    }
                 }
                 NightActionType.LAST_WORDS -> {
                     val speech = extraData["speech"] ?: "..."
@@ -826,8 +1007,11 @@ class GameViewModel(
                 }
                 else -> {}
             }
+        } finally {
+            _isExecutingNightAction.value = false
         }
     }
+}
 
     fun onHumanVote(targetSeat: Int) {
         viewModelScope.launch {
@@ -838,7 +1022,11 @@ class GameViewModel(
                 gameEngine.castVote(humanPlayer.playerId, targetSeat)
             }
             _showVoteDialog.value = false
-            castAiVotes(session)
+            if (isBadgeElection) {
+                castAiBadgeVotes(session)
+            } else {
+                castAiVotes(session)
+            }
             resolveVote(session, isBadgeElection = isBadgeElection)
         }
     }
@@ -847,13 +1035,19 @@ class GameViewModel(
         if (!activeOrAbort(session)) return
         for (player in gameEngine.gameState.value.alivePlayers) {
             if (player.isHuman) continue
-            val targetSeat = gameEngine.suggestVoteTarget(player.playerId)
-                ?: nightAiDecision.pickVoteTarget(
+            // 已翻牌白痴失去投票权
+            if (!gameEngine.canVote(player)) continue
+            // 配置了 LLM 时优先让模型决策，规则逻辑兜底；否则纯规则
+            val targetSeat = if (llmConfigCached.isReady) {
+                nightAiDecision.pickVoteTarget(
                     state = gameEngine.gameState.value,
                     voter = player,
                     difficulty = gameEngine.gameState.value.difficulty,
                     llmConfig = llmConfigCached
-                )
+                ) ?: gameEngine.suggestVoteTarget(player.playerId)
+            } else {
+                gameEngine.suggestVoteTarget(player.playerId)
+            }
             targetSeat?.let { gameEngine.castVote(player.playerId, it) }
         }
     }
@@ -912,6 +1106,7 @@ enum class NightActionType {
     LAST_WORDS,
     HUNTER_SHOOT,
     WHITE_WOLF_BOOM,
+    BADGE_SIGNUP,
     AI_SPEECH_CONTINUE,
     NONE
 }

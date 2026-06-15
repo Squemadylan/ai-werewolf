@@ -5,6 +5,7 @@ import com.squemadylan.wolfcha.data.model.GamePlayer
 import com.squemadylan.wolfcha.data.model.Phase
 import com.squemadylan.wolfcha.data.model.Role
 import com.squemadylan.wolfcha.data.model.WolfchaGameState
+import com.squemadylan.wolfcha.data.model.getDisplayName
 import com.squemadylan.wolfcha.data.model.isNightPhase
 
 /**
@@ -47,7 +48,9 @@ object PlayerKnowledgeScope {
          * - 轮到几（游戏阶段）
          * 引导 AI 在本回合做出符合角色定位的决策，而不是执行刻板行为。
          */
-        val roleObjective: String
+        val roleObjective: String,
+        /** 本局规则说明（按实际人数与角色配置动态生成，屠边胜负规则）。 */
+        val gameRules: String
     )
 
     /** 系统级消息前缀，这些消息不作为公开事件播报给玩家 */
@@ -75,9 +78,10 @@ object PlayerKnowledgeScope {
             .joinToString("\n") { it.content }
             .ifEmpty { "暂无公开事件播报。" }
 
-        // 所有人公开发言（所有人都听过）
+        // 所有人公开发言（所有人都听过）。仅保留最近若干条，避免 token 随对局无限增长。
         val publicSpeeches = state.messages
             .filter { !it.isSystem }
+            .takeLast(40)
             .joinToString("\n") { msg ->
                 val dayTag = if (msg.day == state.day) "" else "[第${msg.day}天]"
                 val aliveFlag = if (state.getPlayerById(msg.playerId)?.alive == true) "" else "（已出局）"
@@ -110,8 +114,81 @@ object PlayerKnowledgeScope {
             voteHistory = voteHistory,
             currentRoundVotes = currentRoundVotes,
             privateFacts = privateFacts,
-            roleObjective = roleObjective
+            roleObjective = roleObjective,
+            gameRules = buildGameRules(state)
         )
+    }
+
+    // ==========================================================================
+    // 本局规则（按实际人数与角色配置动态生成）
+    // ==========================================================================
+
+    /**
+     * 角色配置（板子）在狼人杀中属于公开信息，所有玩家开局即知道有哪些角色。
+     * 因此可以安全地写入每个玩家的提示词，不会泄露任何私密信息。
+     */
+    private fun buildGameRules(state: WolfchaGameState): String {
+        val players = state.players
+        val total = players.size
+        val roleCounts = players.groupingBy { it.role }.eachCount()
+
+        val wolfCount = (roleCounts[Role.Werewolf] ?: 0) + (roleCounts[Role.WhiteWolfKing] ?: 0)
+        val hasWhiteWolfKing = (roleCounts[Role.WhiteWolfKing] ?: 0) > 0
+        val villagerCount = roleCounts[Role.Villager] ?: 0
+        val goodCount = total - wolfCount
+
+        val godRolesOrder = listOf(Role.Seer, Role.Witch, Role.Hunter, Role.Guard, Role.Idiot)
+        val presentGods = godRolesOrder.filter { (roleCounts[it] ?: 0) > 0 }
+        val godSummary = presentGods.joinToString("、") { it.getDisplayName() }
+
+        val wolfDesc = buildString {
+            append("狼人${wolfCount}人")
+            if (hasWhiteWolfKing) append("（含1名白狼王）")
+        }
+        val goodDesc = buildString {
+            append("好人${goodCount}人（")
+            if (godSummary.isNotBlank()) append(godSummary)
+            if (villagerCount > 0) {
+                if (godSummary.isNotBlank()) append("、")
+                append("${villagerCount}名平民")
+            }
+            append("）")
+        }
+
+        val skillLines = mutableListOf<String>()
+        if ((roleCounts[Role.Seer] ?: 0) > 0)
+            skillLines += "- 预言家（神职）：每晚查验一名玩家，得知其是「好人」或「狼人」。不能连续查验同一人。"
+        if ((roleCounts[Role.Witch] ?: 0) > 0)
+            skillLines += "- 女巫（神职）：一瓶解药（救人）+ 一瓶毒药（毒人），各限一次；一夜不可双用，通常不可自救。"
+        if ((roleCounts[Role.Hunter] ?: 0) > 0)
+            skillLines += "- 猎人（神职）：被投票出局或被刀死时可开枪带走一人；被女巫毒死则不能开枪。"
+        if ((roleCounts[Role.Guard] ?: 0) > 0)
+            skillLines += "- 守卫（神职）：每晚守护一名玩家免受狼人袭击，不能连续两晚守护同一人。"
+        if ((roleCounts[Role.Idiot] ?: 0) > 0)
+            skillLines += "- 白痴（神职）：被投票放逐时翻牌免死，翻牌后可继续发言但永久失去投票权。"
+        if (hasWhiteWolfKing)
+            skillLines += "- 白狼王（狼人阵营）：白天可自爆并带走一名玩家；被毒杀时不能发动。"
+        skillLines += "- 狼人（狼人阵营）：每晚与其他狼人共同选择袭击一人。"
+        if (villagerCount > 0)
+            skillLines += "- 平民（好人阵营）：无夜间技能，只能靠发言和投票帮助好人。"
+
+        return """
+【本局配置·${total}人局】
+- 阵营构成：$wolfDesc；$goodDesc。
+- 好人阵营胜利条件：放逐所有狼人。
+- 狼人阵营胜利条件（屠边）：消灭全部神职（屠神）或全部平民（屠民）即可获胜，不需要杀光所有好人。
+- 游戏以「夜晚行动 → 白天发言+投票放逐」交替进行。
+
+【角色技能】
+${skillLines.joinToString("\n")}
+
+【狼人杀铁逻辑】
+1. 两个对跳同一神职者，必有一狼（狼人不敢对跳强神的概率很低）。
+2. 预言家查验结果只能有一个：某个玩家的身份是确定的，不能同时被两人"查杀"。
+3. 第一夜平安夜 = 当晚被女巫救或被守卫守护（或者是自刀）。
+4. 屠边规则：狼人只需消灭全部神职或全部平民即可获胜。
+5. 女巫一夜只能用药一瓶（救人或毒人二选一，不能同时用）。
+        """.trimIndent()
     }
 
     private fun isPublicSystemMessage(msg: ChatMessage): Boolean {

@@ -91,7 +91,28 @@ data class NightActions(
     val seerResult: SeerResult? = null,
     val seerHistory: List<SeerHistoryEntry> = emptyList(),
     val pendingWolfVictim: Int? = null,
-    val pendingPoisonVictim: Int? = null
+    val pendingPoisonVictim: Int? = null,
+    // === 历史记录（不会被 reset 清空）===
+    val wolfKillHistory: List<WolfKillEntry> = emptyList(),     // 狼人每晚杀人记录
+    val witchActionHistory: List<WitchActionEntry> = emptyList(), // 女巫每晚用药记录
+    val guardActionHistory: List<GuardActionEntry> = emptyList() // 守卫每晚守人记录
+)
+
+data class WolfKillEntry(
+    val day: Int,
+    val targetSeat: Int,
+    val killed: Boolean // 是否真正成功杀死（被救= false）
+)
+
+data class WitchActionEntry(
+    val day: Int,
+    val healedTarget: Int?,   // 救人目标（被狼人刀的玩家）
+    val poisonedTarget: Int?  // 毒人目标
+)
+
+data class GuardActionEntry(
+    val day: Int,
+    val targetSeat: Int
 )
 
 data class SeerResult(
@@ -138,6 +159,7 @@ object GameConfig {
     const val MAX_REVOTE_COUNT = 3
     const val MAX_BADGE_REVOTE_COUNT = 2
 
+    // 10人标准局：2狼+白狼王 / 预女猎守白 / 2平民（≥9人局用白痴替换一个平民）
     val STANDARD_ROLES = listOf(
         Role.Werewolf,
         Role.Werewolf,
@@ -146,7 +168,7 @@ object GameConfig {
         Role.Witch,
         Role.Hunter,
         Role.Guard,
-        Role.Villager,
+        Role.Idiot,
         Role.Villager,
         Role.Villager
     )
@@ -168,21 +190,22 @@ object GameConfig {
                 Role.Seer, Role.Witch, Role.Hunter,
                 Role.Villager, Role.Villager
             )
+            // 9人起：白痴替换一个平民进局
             9 -> listOf(
                 Role.Werewolf, Role.Werewolf, Role.Werewolf,
-                Role.Seer, Role.Witch, Role.Hunter,
-                Role.Villager, Role.Villager, Role.Villager
+                Role.Seer, Role.Witch, Role.Hunter, Role.Idiot,
+                Role.Villager, Role.Villager
             )
             10 -> STANDARD_ROLES
             11 -> listOf(
                 Role.Werewolf, Role.Werewolf, Role.WhiteWolfKing,
-                Role.Seer, Role.Witch, Role.Hunter, Role.Guard,
-                Role.Villager, Role.Villager, Role.Villager, Role.Villager
+                Role.Seer, Role.Witch, Role.Hunter, Role.Guard, Role.Idiot,
+                Role.Villager, Role.Villager, Role.Villager
             )
             12 -> listOf(
                 Role.Werewolf, Role.Werewolf, Role.Werewolf, Role.WhiteWolfKing,
-                Role.Seer, Role.Witch, Role.Hunter, Role.Guard,
-                Role.Villager, Role.Villager, Role.Villager, Role.Villager
+                Role.Seer, Role.Witch, Role.Hunter, Role.Guard, Role.Idiot,
+                Role.Villager, Role.Villager, Role.Villager
             )
             else -> STANDARD_ROLES
         }

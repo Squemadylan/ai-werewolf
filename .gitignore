@@ -1,43 +1,22 @@
-# Built application files
-# NOTE: Debug APK is explicitly tracked in the repo
-*.aar
-*.ap_
-*.aab
-
-# Files for the ART/Dalvik VM
-*.dex
-
-# Java class files
-*.class
-
-# Generated files
-bin/
-gen/
-out/
-*.hprof
-
-# Gradle
+# ---------- Android / Gradle ----------
+*.iml
 .gradle/
-build/
-!gradle/wrapper/gradle-wrapper.jar
-
-# Local configuration file (SDK path, etc.)
+/local.properties
+.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
 local.properties
 
-# IntelliJ
-*.iml
-.idea/
-*.ipr
-*.iws
-out/
+# ---------- Kotlin ----------
+.kotlin/
 
-# Keystore files
-*.jks
-*.keystore
+# ---------- App Build Outputs (APK 通常不入库) ----------
+# 取消下一行注释以忽略 APK 输出
+# app/build/
 
-# Android Profiling
+# ---------- Logs / Temp ----------
+*.log
 *.hprof
-
-# OS specific files
-.DS_Store
-Thumbs.db

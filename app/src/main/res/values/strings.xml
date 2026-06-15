@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Wolfcha</string>
+    <string name="app_name">AI狼人杀</string>
     <string name="home_title">Wolfcha</string>
     <string name="start_game">Start Game</string>
     <string name="profile">Profile</string>

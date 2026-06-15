@@ -171,18 +171,28 @@ fun HomeScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
-                    Text(
-                        text = "AI 玩家配置",
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = TextPrimary,
-                        fontWeight = FontWeight.Bold
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Image(
+                        painter = painterResource(id = com.squemadylan.wolfcha.R.drawable.ic_launcher_bg),
+                        contentDescription = "App Logo",
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
                     )
-                    Text(
-                        text = "${prefs.playerCount} 人局 · ${appViewModel.difficultyLabel(prefs.difficulty)} · 共 ${prefs.aiPersonaPool.size} 名 AI",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary
-                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "AI 玩家配置",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${prefs.playerCount} 人局 · ${appViewModel.difficultyLabel(prefs.difficulty)} · 共 ${prefs.aiPersonaPool.size} 名 AI",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextSecondary
+                        )
+                    }
                 }
                 Box(
                     modifier = Modifier
