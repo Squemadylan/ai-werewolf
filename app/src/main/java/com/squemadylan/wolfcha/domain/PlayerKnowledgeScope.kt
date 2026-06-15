@@ -313,6 +313,14 @@ ${skillLines.joinToString("\n")}
                 }
             }
 
+            // 白痴：自己从开局就知道自己是白痴；如果被票翻牌，再告知翻牌状态
+            Role.Idiot -> {
+                lines += "【你的身份】你是白痴。被投票出局时翻牌免死（不会出局），但翻牌后永久失去投票权，且不能再被投票。夜晚被狼人刀或被女巫毒仍会死亡且不能发言。"
+                if (state.roleAbilities.idiotRevealed) {
+                    lines += "【当前状态】你已翻牌。当前你不能投票，也不能被投票，但可以继续白天发言。"
+                }
+            }
+
             else -> {}
         }
 
@@ -446,7 +454,23 @@ ${skillLines.joinToString("\n")}
             }
 
             // ====================================================================
-            // 白痴 / 平民
+            // 白痴
+            // ====================================================================
+            Role.Idiot -> {
+                buildIdiotObjective(
+                    viewer = viewer,
+                    state = state,
+                    revealed = state.roleAbilities.idiotRevealed,
+                    someoneElseClaimedSeat = seerClaimant,
+                    topVoteTarget = topVoteTarget,
+                    totalAlive = totalAlive,
+                    wolfCount = wolfCount,
+                    villageCount = villageCount
+                )
+            }
+
+            // ====================================================================
+            // 平民
             // ====================================================================
             else -> {
                 buildVillagerObjective(
@@ -751,6 +775,59 @@ ${if (someoneElseClaimed) "如果${someoneElseClaimedSeat?.plus(1) ?: "跳预言
 ${if (topVoteTarget != null) "当前票数最高：${topVoteTarget + 1}号${state.getPlayerBySeat(topVoteTarget)?.displayName ?: ""}，如果你也觉得这人可疑，可以跟票。" else ""}
 【重要心态】不要轻易站边，要等更多信息。预言家的查验+逻辑是判断的核心。
         """.trimIndent()
+    }
+
+    /**
+     * 白痴策略：
+     * - 未翻牌：与平民一致（不暴露自己是白痴，避免被对跳/被针对），靠发言和投票帮助好人
+     * - 已翻牌：不能投票/被投票，但仍能发言；用发言引导局势即可
+     */
+    private fun buildIdiotObjective(
+        viewer: GamePlayer,
+        state: WolfchaGameState,
+        revealed: Boolean,
+        someoneElseClaimedSeat: Int?,
+        topVoteTarget: Int?,
+        totalAlive: Int,
+        wolfCount: Int,
+        villageCount: Int
+    ): String {
+        val seat = viewer.seat + 1
+        val survivalRounds = minOf(villageCount, wolfCount)
+        val seerClaimant = someoneElseClaimedSeat?.plus(1) ?: "?"
+
+        return if (revealed) {
+            // 翻牌后：失去投票权 + 不能被投票，但保留发言
+            """
+【你的身份】白痴（已翻牌）。
+【当前状态】你已被票翻牌免死。翻牌后你：永久失去投票权、不能再被投票，但白天仍可发言。
+${totalAlive}人存活，狼约${wolfCount}个，好人约${villageCount}个。好人大约还需要$survivalRounds 轮才能把狼人全部投出。
+${if (someoneElseClaimedSeat != null) "场上有人跳预言家（${seerClaimant}号）。" else "目前还没人跳预言家。"}
+${if (topVoteTarget != null) "当前票数最高：${topVoteTarget + 1}号${state.getPlayerBySeat(topVoteTarget)?.displayName ?: ""}。" else ""}
+【你的玩法】
+- 你是"免死的活跃票源"：失去投票权但能用发言强力站边/反驳。
+- 重点站边真预言家："我相信${seerClaimant}号的查验，他报的方向我认。"
+- 如果场上没人跳预言家，主动建议大家关注哪些发言最像狼、哪些票型异常。
+- 不要用"我有身份"含糊话——你已经翻牌了，可以直接说自己是白痴。
+- 你现在是"被压着发言的活票仓"，重点是给好人提供逻辑+判断依据。
+        """.trimIndent()
+        } else {
+            // 未翻牌：伪装成平民，但自己知道身份
+            """
+【你的身份】白痴（尚未翻牌）。
+【你的特性】被投票出局时翻牌免死；翻牌后永久失去投票权且不能再被投票，但白天仍可发言。夜晚被刀/被毒仍会死亡且不发言。
+${totalAlive}人存活，狼约${wolfCount}个，好人约${villageCount}个。好人大约还需要$survivalRounds 轮才能把狼人全部投出。
+${if (someoneElseClaimedSeat != null) "场上有人跳预言家（${seerClaimant}号）。" else "目前还没人跳预言家。"}
+${if (topVoteTarget != null) "当前票数最高：${topVoteTarget + 1}号${state.getPlayerBySeat(topVoteTarget)?.displayName ?: ""}。" else ""}
+【你的策略】
+- 不要主动暴露自己是白痴！一旦被狼人知道，他们会针对你制造混乱。
+- 表面装作平民：说"我是好人，没有信息"或跟票高票者。
+- 关注场上逻辑：谁在乱带节奏、谁在倒钩、谁跳预言家。
+- 必要时用发言反驳明显是狼的发言，但不暴露身份。
+- 跟票策略：跟真预言家的查验方向 / 跟发言最可疑者。
+【重要】你不知道任何查验、用药、守护等夜间信息——你的能力仅在"被票时翻牌免死"。
+        """.trimIndent()
+        }
     }
 
     // ==========================================================================

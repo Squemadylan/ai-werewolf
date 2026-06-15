@@ -74,4 +74,24 @@ class PlayerKnowledgeScopeTest {
         assertTrue(k.gameRules.contains("屠边"))
         assertTrue(k.gameRules.contains("狼人2人"))
     }
+
+    @Test
+    fun idiotKnowsOwnRoleFromStart() {
+        // 白痴 AI 在开局就应该知道自己是白痴（不需要等被票翻牌）
+        val stateWithIdiot = state.copy(
+            players = state.players + player(6, Role.Idiot)
+        )
+        val k = PlayerKnowledgeScope.buildFor(stateWithIdiot, stateWithIdiot.players[6])
+        assertTrue("白痴应从开局知道身份", k.privateFacts.contains("白痴"))
+    }
+
+    @Test
+    fun revealedIdiotGetsExtraStateInPrivateFacts() {
+        val stateWithIdiot = state.copy(
+            players = state.players + player(6, Role.Idiot),
+            roleAbilities = state.roleAbilities.copy(idiotRevealed = true)
+        )
+        val k = PlayerKnowledgeScope.buildFor(stateWithIdiot, stateWithIdiot.players[6])
+        assertTrue("白痴被翻牌后应被告知翻牌状态", k.privateFacts.contains("已翻牌"))
+    }
 }
