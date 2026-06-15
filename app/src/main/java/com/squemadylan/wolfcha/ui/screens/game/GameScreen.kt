@@ -26,6 +26,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.squemadylan.wolfcha.data.model.*
 import com.squemadylan.wolfcha.ui.theme.*
@@ -141,7 +142,8 @@ fun GameScreen(
                     showResultPanel = showResultPanel,
                     onToggleResultPanel = { viewModel.toggleResultPanel() },
                     onDismissResultPanel = { viewModel.dismissResultPanel() },
-                    cheatMode = cheatMode
+                    cheatMode = cheatMode,
+                    onWolfBoom = { viewModel.requestWolfBoom() }
                 )
             }
         }
@@ -417,11 +419,13 @@ private fun GamePlayScreen(
     showResultPanel: Boolean,
     onToggleResultPanel: () -> Unit,
     onDismissResultPanel: () -> Unit,
-    cheatMode: Boolean = false
+    cheatMode: Boolean = false,
+    onWolfBoom: () -> Unit = {}
 ) {
     val isHumanWolf = gameState.isHumanWolf
     val isHumanSeer = gameState.humanPlayer?.role == Role.Seer
     val wolfTeammateSeats = gameState.wolfTeammateSeats
+    val idiotRevealed = gameState.roleAbilities.idiotRevealed
     // 预言家查验过且被查杀（isWolf=true）的座位集合
     val seerWolfSeats = remember(gameState.nightActions.seerHistory) {
         gameState.nightActions.seerHistory
@@ -429,6 +433,10 @@ private fun GamePlayScreen(
             .map { it.targetSeat }
             .toSet()
     }
+
+    // 白天发言/投票阶段，人类是狼人/白狼王 → 浮动"自爆"按钮
+    val isDayPhase = !gameState.isNight
+    val canShowWolfBoomButton = isHumanWolf && isDayPhase && !isPaused
 
     Column(
         modifier = Modifier.fillMaxSize()
@@ -438,7 +446,9 @@ private fun GamePlayScreen(
             isPaused = isPaused,
             onTogglePause = onTogglePause,
             onRequestEndGame = onRequestEndGame,
-            onToggleResultPanel = onToggleResultPanel
+            onToggleResultPanel = onToggleResultPanel,
+            showWolfBoomButton = canShowWolfBoomButton,
+            onWolfBoom = onWolfBoom
         )
 
         // Player Grid
@@ -449,6 +459,7 @@ private fun GamePlayScreen(
             isHumanSeer = isHumanSeer,
             wolfTeammateSeats = wolfTeammateSeats,
             seerWolfSeats = seerWolfSeats,
+            idiotRevealed = idiotRevealed,
             cheatMode = cheatMode,
             modifier = Modifier.weight(1f)
         )
@@ -490,15 +501,17 @@ private fun GamePlayScreen(
 
         if (showVoteDialog) {
             val isBadgeVote = gameState.phase == Phase.DAY_BADGE_ELECTION
+            // 显示完整 alive 列表；已出局者通过白痴/出局标记排除（VotePanel 内根据 idiotRevealed 灰化）
             val votablePlayers = if (isBadgeVote) {
-                gameState.alivePlayers.filter { it.seat in gameState.badge.candidates }
+                gameState.players.filter { it.seat in gameState.badge.candidates }
             } else {
-                gameState.alivePlayers
+                gameState.players
             }
             VotePanel(
                 players = votablePlayers,
                 humanPlayer = gameState.humanPlayer,
                 title = if (isBadgeVote) "请投票选出警长" else "请选择投票目标",
+                idiotRevealed = gameState.roleAbilities.idiotRevealed,
                 onVote = onVote
             )
         }
@@ -518,7 +531,9 @@ private fun GameTopBar(
     isPaused: Boolean,
     onTogglePause: () -> Unit,
     onRequestEndGame: () -> Unit,
-    onToggleResultPanel: () -> Unit = {}
+    onToggleResultPanel: () -> Unit = {},
+    showWolfBoomButton: Boolean = false,
+    onWolfBoom: () -> Unit = {}
 ) {
     Surface(
         color = if (gameState.isNight) NightSurface else DaySurface,
@@ -549,6 +564,33 @@ private fun GameTopBar(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                if (showWolfBoomButton) {
+                    val isWhiteWolfKing = gameState.humanPlayer?.role == Role.WhiteWolfKing
+                    Surface(
+                        color = WerewolfRed.copy(alpha = 0.25f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.clickable { onWolfBoom() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Bolt,
+                                contentDescription = "自爆",
+                                tint = WerewolfRed,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (isWhiteWolfKing) "自爆带走" else "自爆",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = WerewolfRed,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
                 StatusBadge(
                     text = "存活: ${gameState.alivePlayers.size}",
                     color = SuccessGreen
@@ -606,6 +648,7 @@ private fun PlayerGrid(
     isHumanSeer: Boolean = false,
     wolfTeammateSeats: Set<Int> = emptySet(),
     seerWolfSeats: Set<Int> = emptySet(),
+    idiotRevealed: Boolean = false,
     cheatMode: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -626,6 +669,7 @@ private fun PlayerGrid(
                         isHuman = player.playerId == humanPlayer?.playerId,
                         isWolfTeammate = isHumanWolf && wolfTeammateSeats.contains(player.seat),
                         isCheckedWolf = isHumanSeer && seerWolfSeats.contains(player.seat),
+                        isIdiotRevealed = idiotRevealed && player.role == Role.Idiot,
                         cheatMode = cheatMode,
                         modifier = Modifier.weight(1f)
                     )
@@ -648,6 +692,10 @@ private fun PlayerGrid(
  * 4. 玩家是人类的狼队友 → 狼队友红
  * 5. 玩家是预言家查验出来的狼人 → 红
  * 6. 其余 → 默认灰色
+ *
+ * 删除线（不改变颜色，仅 TextDecoration）：
+ * - 玩家已死亡
+ * - 玩家是白痴且已翻牌（即便还活着也加删除线，体现"票出"标记）
  */
 @Composable
 private fun PlayerCard(
@@ -655,6 +703,7 @@ private fun PlayerCard(
     isHuman: Boolean,
     isWolfTeammate: Boolean = false,
     isCheckedWolf: Boolean = false,
+    isIdiotRevealed: Boolean = false,
     cheatMode: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -677,6 +726,9 @@ private fun PlayerCard(
         isCheckedWolf -> WerewolfRed
         else -> VillagerGray
     }
+
+    val isOutOfGame = !player.alive || isIdiotRevealed
+    val strike = if (isOutOfGame) TextDecoration.LineThrough else TextDecoration.None
 
     val cardModifier = if (isWolfTeammate && player.alive) {
         modifier.border(
@@ -716,7 +768,8 @@ private fun PlayerCard(
                     text = "${player.seat + 1}",
                     style = MaterialTheme.typography.titleMedium,
                     color = avatarNumberColor,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    textDecoration = strike
                 )
             }
 
@@ -727,7 +780,8 @@ private fun PlayerCard(
                     text = player.displayName + if (isHuman) " (你)" else "",
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (player.alive) TextPrimary else TextMuted,
-                    fontWeight = if (isHuman) FontWeight.Bold else FontWeight.Normal
+                    fontWeight = if (isHuman) FontWeight.Bold else FontWeight.Normal,
+                    textDecoration = strike
                 )
                 if (isWolfTeammate && player.alive) {
                     Text(
@@ -742,6 +796,14 @@ private fun PlayerCard(
                         text = "查杀",
                         style = MaterialTheme.typography.labelSmall,
                         color = WerewolfRed,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                if (isIdiotRevealed && player.alive) {
+                    Text(
+                        text = "已翻牌（无法被投票）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WolfchaAccent,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -1215,6 +1277,7 @@ private fun VotePanel(
     players: List<GamePlayer>,
     humanPlayer: GamePlayer?,
     title: String = "请选择投票目标",
+    idiotRevealed: Boolean = false,
     onVote: (Int) -> Unit
 ) {
     Surface(
@@ -1234,7 +1297,15 @@ private fun VotePanel(
                 fontWeight = FontWeight.Bold
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "提示：灰色带删除线按钮表示该玩家无法被投票（已出局/已翻牌白痴）",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextMuted
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
 
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
@@ -1242,16 +1313,57 @@ private fun VotePanel(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 players.forEach { player ->
-                    Button(
-                        onClick = { onVote(player.seat) },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (player.playerId == humanPlayer?.playerId)
-                                WolfchaPrimary.copy(alpha = 0.25f)
-                            else DarkCard
-                        )
-                    ) {
-                        Text("${player.seat + 1}号 ${player.displayName}")
+                    val isSelf = player.playerId == humanPlayer?.playerId
+                    val isDead = !player.alive
+                    val isRevealedIdiot = idiotRevealed && player.role == Role.Idiot
+                    // 不可被投票：出局 / 已翻牌白痴 / 自己（白痴翻牌后自己不能投自己——后面 canVote 已盖住，
+                    // 但为了 UI 反馈，这里给白痴翻牌时也禁用自己）
+                    val disabled = isDead || isRevealedIdiot
+
+                    if (disabled) {
+                        // 不可选样式：灰底 + 删除线 + 角标
+                        Surface(
+                            color = Color.Gray.copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = "${player.seat + 1}号 ${player.displayName}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = TextMuted,
+                                    textDecoration = TextDecoration.LineThrough
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    color = if (isRevealedIdiot) WolfchaAccent.copy(alpha = 0.3f)
+                                            else ErrorRed.copy(alpha = 0.3f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = if (isRevealedIdiot) "已翻牌" else "已出局",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isRevealedIdiot) WolfchaAccent else ErrorRed,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        Button(
+                            onClick = { onVote(player.seat) },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isSelf)
+                                    WolfchaPrimary.copy(alpha = 0.25f)
+                                else DarkCard
+                            )
+                        ) {
+                            Text("${player.seat + 1}号 ${player.displayName}")
+                        }
                     }
                 }
             }

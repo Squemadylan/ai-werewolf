@@ -91,6 +91,126 @@ class GameViewModel(
         _cheatMode.value = !_cheatMode.value
     }
 
+    /**
+     * 人类玩家白天主动触发自爆（狼人或白狼王）。
+     * 白天任意阶段都可以点；点了之后立即结算：
+     * - 白狼王：自爆后选择带走的玩家；再进入夜晚
+     * - 普通狼人：自爆后直接进入夜晚（不带人）
+     */
+    fun requestWolfBoom() {
+        viewModelScope.launch {
+            if (_isExecutingNightAction.value) return@launch
+            val session = captureSession()
+            if (!activeOrAbort(session)) return@launch
+            val state = gameEngine.gameState.value
+            // 仅在白天、未结束、未暂停时生效
+            if (state.isNight || _gameEnded.value) return@launch
+            val human = state.humanPlayer ?: return@launch
+            if (!human.alive) return@launch
+            val role = human.role
+            if (role != Role.Werewolf && role != Role.WhiteWolfKing) return@launch
+
+            _isExecutingNightAction.value = true
+            try {
+                when (role) {
+                    Role.WhiteWolfKing -> startWhiteWolfKingVoluntaryBoom(session, human.seat)
+                    else -> startWolfVoluntaryBoom(session, human.seat)
+                }
+            } finally {
+                _isExecutingNightAction.value = false
+            }
+        }
+    }
+
+    /** 白狼王白天主动自爆：选目标带走 → 立即夜晚。 */
+    private suspend fun startWhiteWolfKingVoluntaryBoom(session: Int, wwkSeat: Int) {
+        if (!activeOrAbort(session)) return
+        val wwk = gameEngine.gameState.value.getPlayerBySeat(wwkSeat) ?: return
+        announceSystem("${wwkSeat + 1}号 ${wwk.displayName} 主动发动自爆！请选择要带走的玩家")
+
+        // 复用现有的 WHITE_WOLF_BOOM UI 流程
+        gameEngine.transitionPhase(Phase.WHITE_WOLF_KING_BOOM)
+        _showNightAction.value = true
+        _currentDialogue.value = DialogueState(
+            speaker = "系统",
+            text = "白狼王自爆：请选择要带走的玩家",
+            actionType = NightActionType.WHITE_WOLF_BOOM,
+            extraData = mapOf("seat" to wwkSeat.toString())
+        )
+    }
+
+    /** 普通狼人白天主动自爆：不带人 → 立即夜晚。 */
+    private suspend fun startWolfVoluntaryBoom(session: Int, wolfSeat: Int) {
+        if (!activeOrAbort(session)) return
+        val wolf = gameEngine.gameState.value.getPlayerBySeat(wolfSeat) ?: return
+        announceSystem("${wolfSeat + 1}号 ${wolf.displayName} 主动自爆！立即进入夜晚")
+
+        // 自杀
+        gameEngine.killPlayer(wolfSeat)
+        announceSystem("${wolfSeat + 1}号 ${wolf.displayName} 自爆出局")
+
+        delay(500)
+        if (!activeOrAbort(session)) return
+
+        val winner = gameEngine.checkWinCondition()
+        if (winner != null) {
+            endGame(winner, session)
+            return
+        }
+
+        delay(800)
+        if (!activeOrAbort(session)) return
+        gameEngine.advanceToNextDay()
+        startNightPhase(session)
+    }
+
+    /**
+     * AI 狼/白狼王在白天自发自爆：作为发言阶段后的可选决策。
+     * 当前为简化处理：白狼王被票/被查杀高危时会自爆；普通狼不主动自爆（用户没明确 AI 概率）。
+     * 由各发言阶段 AI 决策钩子调用。
+     */
+    fun maybeAiWolfBoom(session: Int) {
+        viewModelScope.launch {
+            if (_isExecutingNightAction.value) return@launch
+            if (!activeOrAbort(session)) return@launch
+            val state = gameEngine.gameState.value
+            if (state.isNight || _gameEnded.value) return@launch
+            // 仅白狼王在"被多个高票"或"预言家对跳且查验到己方"时自爆
+            val wwk = state.players.firstOrNull { it.alive && it.role == Role.WhiteWolfKing }
+            if (wwk == null || wwk.isHuman) return@launch
+            val lastCheck = state.nightActions.seerHistory.lastOrNull()
+            val wwkChecked = lastCheck?.targetSeat == wwk.seat && lastCheck.isWolf
+            if (wwkChecked) {
+                _isExecutingNightAction.value = true
+                try {
+                    // AI 自爆：不带人（简化）
+                    val target = state.alivePlayers
+                        .filter { it.seat != wwk.seat && !it.role.isWolfRole() }
+                        .randomOrNull()
+                    gameEngine.killPlayer(wwk.seat)
+                    announceSystem("${wwk.seat + 1}号 ${wwk.displayName} 白狼王自爆！")
+                    if (target != null) {
+                        gameEngine.killPlayer(target.seat)
+                        announceSystem("${target.seat + 1}号 ${target.displayName} 被白狼王带走")
+                    }
+                    delay(500)
+                    if (!activeOrAbort(session)) return@launch
+                    val winner = gameEngine.checkWinCondition()
+                    if (winner != null) {
+                        endGame(winner, session)
+                        return@launch
+                    }
+                    delay(800)
+                    if (!activeOrAbort(session)) return@launch
+                    gameEngine.advanceToNextDay()
+                    startNightPhase(session)
+                } finally {
+                    _isExecutingNightAction.value = false
+                }
+            }
+        }
+    }
+
     private fun captureSession(): Int = gameSessionId
 
     private suspend fun waitIfPaused() {
@@ -704,12 +824,36 @@ class GameViewModel(
 
         when (player.role) {
             Role.Idiot -> {
+                // 白痴被票出：翻牌 + 永久失去投票权 + 不能再被投票
+                // 该轮投票作废，重新进入本轮白天（剩余玩家继续发言，再开一轮投票）
                 gameEngine.revealIdiot(executedSeat)
-                announceSystem("${executedSeat + 1}号 ${player.displayName} 翻牌白痴，不会出局")
+                announceSystem("${executedSeat + 1}号 ${player.displayName} 翻牌白痴，不会出局（白天仍可发言，但失去投票权且不能再被投票）")
                 delay(1000)
                 if (!activeOrAbort(session)) return
-                gameEngine.advanceToNextDay()
-                startNightPhase(session)
+                // 过滤掉所有指向白痴的票（白痴翻牌前其他人可能投了他）
+                val state = gameEngine.gameState.value
+                val filteredVotes = state.votes.filter { (voterId, targetSeat) ->
+                    val voter = state.getPlayerById(voterId)
+                    val target = state.getPlayerBySeat(targetSeat)
+                    voter != null &&
+                        voter.alive &&
+                        !(voter.role == Role.Idiot && state.roleAbilities.idiotRevealed) &&
+                        target != null && target.alive &&
+                        !(target.role == Role.Idiot && state.roleAbilities.idiotRevealed) &&
+                        target.role != Role.Idiot // 二次保险：白痴不能再被投票
+                }
+                // 强制清空并回到发言阶段，让剩下的玩家继续发言
+                gameEngine.clearVotes()
+                gameEngine.transitionPhase(Phase.DAY_SPEECH)
+                // 把发言起点设为白痴的下一位，避免重复发言
+                val nextSeat = state.getNextAliveSeat(executedSeat, state.speechDirection)
+                if (nextSeat != null) {
+                    gameEngine.setDaySpeechStartSeat(nextSeat)
+                }
+                speechCursor = 0
+                announceSystem("投票作废，请大家继续发言（白痴翻牌后不再参与投票/被投票）")
+                delay(800)
+                runDaySpeech(session)
             }
             Role.WhiteWolfKing -> {
                 runWhiteWolfBoom(session, executedSeat)
@@ -1119,6 +1263,7 @@ enum class NightActionType {
     LAST_WORDS,
     HUNTER_SHOOT,
     WHITE_WOLF_BOOM,
+    WOLF_BOOM,
     BADGE_SIGNUP,
     AI_SPEECH_CONTINUE,
     NONE
