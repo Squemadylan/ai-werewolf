@@ -9,14 +9,14 @@
 .externalNativeBuild
 .cxx
 local.properties
+app/build/
+app/.cxx/
 
 # ---------- Kotlin ----------
 .kotlin/
 
-# ---------- App Build Outputs (APK 通常不入库) ----------
-# 取消下一行注释以忽略 APK 输出
-# app/build/
-
 # ---------- Logs / Temp ----------
 *.log
 *.hprof
+build_*.txt
+
