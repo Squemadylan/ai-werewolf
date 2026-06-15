@@ -23,6 +23,11 @@ val HunterOrange = Color(0xFFF97316)
 val GuardTeal = Color(0xFF14B8A6)
 val WhiteWolfKingCrimson = Color(0xFFBE123C)
 
+// 天眼 / 序号染色 专用色（8 种身份）
+val VillagerGray = Color(0xFF9CA3AF)        // 平民 - 灰
+val IdiotLightGreen = Color(0xFF86EFAC)     // 白痴 - 浅绿
+val GuardYellow = Color(0xFFFACC15)         // 守卫 - 黄
+
 // Text Colors
 val TextPrimary = Color(0xFFF1F5F9)
 val TextSecondary = Color(0xFF94A3B8)

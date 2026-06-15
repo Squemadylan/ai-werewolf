@@ -79,6 +79,18 @@ class GameViewModel(
     private val _showEndGameConfirm = MutableStateFlow(false)
     val showEndGameConfirm: StateFlow<Boolean> = _showEndGameConfirm.asStateFlow()
 
+    /**
+     * 天眼模式：开启后所有玩家序号按真实身份染色。
+     * 触发条件：暂停弹窗的紫色暂停图标连续点击 5 次。
+     * 仅在内存中持有，不入存档——退出对局即重置。
+     */
+    private val _cheatMode = MutableStateFlow(false)
+    val cheatMode: StateFlow<Boolean> = _cheatMode.asStateFlow()
+
+    fun toggleCheatMode() {
+        _cheatMode.value = !_cheatMode.value
+    }
+
     private fun captureSession(): Int = gameSessionId
 
     private suspend fun waitIfPaused() {
@@ -1071,6 +1083,7 @@ class GameViewModel(
         _currentDialogue.value = null
         _isPaused.value = false
         _waitingForSpeechContinue.value = false
+        _cheatMode.value = false
         speechCursor = 0
         gameEngine.resetGame()
     }

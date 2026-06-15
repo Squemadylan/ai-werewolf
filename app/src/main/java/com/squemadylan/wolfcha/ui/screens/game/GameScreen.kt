@@ -51,6 +51,7 @@ fun GameScreen(
     val gameEnded by viewModel.gameEnded.collectAsState()
     val winner by viewModel.winner.collectAsState()
     val waitingForSpeechContinue by viewModel.waitingForSpeechContinue.collectAsState()
+    val cheatMode by viewModel.cheatMode.collectAsState()
 
     var endGameConfirmStep by remember { mutableIntStateOf(0) }
 
@@ -139,7 +140,8 @@ fun GameScreen(
                     onSpeechContinue = { viewModel.onSpeechContinue() },
                     showResultPanel = showResultPanel,
                     onToggleResultPanel = { viewModel.toggleResultPanel() },
-                    onDismissResultPanel = { viewModel.dismissResultPanel() }
+                    onDismissResultPanel = { viewModel.dismissResultPanel() },
+                    cheatMode = cheatMode
                 )
             }
         }
@@ -150,6 +152,11 @@ fun GameScreen(
             !gameEnded &&
             gameState.isPaused
         ) {
+            // 暂停弹窗中的"5 连点暂停图标"探测（解锁/关闭天眼模式）
+            var pauseIconTaps by remember { mutableStateOf(0) }
+            val tapResetMillis = 3_000L
+            var firstTapTime by remember { mutableStateOf(0L) }
+
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -164,11 +171,26 @@ fun GameScreen(
                         modifier = Modifier.padding(24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        // 紫色暂停图标——5 连点触发天眼
                         Icon(
                             imageVector = Icons.Default.Pause,
                             contentDescription = null,
                             tint = WolfchaPrimary,
-                            modifier = Modifier.size(48.dp)
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clickable {
+                                    val now = System.currentTimeMillis()
+                                    if (pauseIconTaps == 0 || now - firstTapTime > tapResetMillis) {
+                                        firstTapTime = now
+                                        pauseIconTaps = 1
+                                    } else {
+                                        pauseIconTaps += 1
+                                    }
+                                    if (pauseIconTaps >= 5) {
+                                        viewModel.toggleCheatMode()
+                                        pauseIconTaps = 0
+                                    }
+                                }
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
@@ -177,6 +199,21 @@ fun GameScreen(
                             color = TextPrimary,
                             fontWeight = FontWeight.Bold
                         )
+                        if (cheatMode) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Surface(
+                                color = WolfchaPrimary.copy(alpha = 0.25f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "天眼模式已开启",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = WolfchaPrimary,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
                         Spacer(modifier = Modifier.height(16.dp))
                         Button(
                             onClick = { viewModel.togglePause() },
@@ -379,10 +416,19 @@ private fun GamePlayScreen(
     onSpeechContinue: () -> Unit,
     showResultPanel: Boolean,
     onToggleResultPanel: () -> Unit,
-    onDismissResultPanel: () -> Unit
+    onDismissResultPanel: () -> Unit,
+    cheatMode: Boolean = false
 ) {
     val isHumanWolf = gameState.isHumanWolf
+    val isHumanSeer = gameState.humanPlayer?.role == Role.Seer
     val wolfTeammateSeats = gameState.wolfTeammateSeats
+    // 预言家查验过且被查杀（isWolf=true）的座位集合
+    val seerWolfSeats = remember(gameState.nightActions.seerHistory) {
+        gameState.nightActions.seerHistory
+            .filter { it.isWolf }
+            .map { it.targetSeat }
+            .toSet()
+    }
 
     Column(
         modifier = Modifier.fillMaxSize()
@@ -400,7 +446,10 @@ private fun GamePlayScreen(
             players = gameState.players,
             humanPlayer = gameState.humanPlayer,
             isHumanWolf = isHumanWolf,
+            isHumanSeer = isHumanSeer,
             wolfTeammateSeats = wolfTeammateSeats,
+            seerWolfSeats = seerWolfSeats,
+            cheatMode = cheatMode,
             modifier = Modifier.weight(1f)
         )
 
@@ -554,7 +603,10 @@ private fun PlayerGrid(
     players: List<GamePlayer>,
     humanPlayer: GamePlayer?,
     isHumanWolf: Boolean = false,
+    isHumanSeer: Boolean = false,
     wolfTeammateSeats: Set<Int> = emptySet(),
+    seerWolfSeats: Set<Int> = emptySet(),
+    cheatMode: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     LazyColumn(
@@ -573,6 +625,8 @@ private fun PlayerGrid(
                         player = player,
                         isHuman = player.playerId == humanPlayer?.playerId,
                         isWolfTeammate = isHumanWolf && wolfTeammateSeats.contains(player.seat),
+                        isCheckedWolf = isHumanSeer && seerWolfSeats.contains(player.seat),
+                        cheatMode = cheatMode,
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -584,11 +638,24 @@ private fun PlayerGrid(
     }
 }
 
+/**
+ * 玩家卡片。
+ *
+ * 序号（头像圈内文字）颜色规则（按优先级从高到低）：
+ * 1. 玩家已死亡 → 灰色
+ * 2. cheatMode = true → 按真实身份显示 8 种颜色
+ * 3. 玩家是人类自己 → 显示其身份的原色
+ * 4. 玩家是人类的狼队友 → 狼队友红
+ * 5. 玩家是预言家查验出来的狼人 → 红
+ * 6. 其余 → 默认灰色
+ */
 @Composable
 private fun PlayerCard(
     player: GamePlayer,
     isHuman: Boolean,
     isWolfTeammate: Boolean = false,
+    isCheckedWolf: Boolean = false,
+    cheatMode: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val roleColor = when (player.role) {
@@ -600,6 +667,15 @@ private fun PlayerCard(
         Role.Guard -> GuardTeal
         Role.Idiot -> Color(0xFF8B5CF6)
         Role.Villager -> VillagerBlue
+    }
+
+    val avatarNumberColor: Color = when {
+        !player.alive -> Color.Gray
+        cheatMode -> cheatColorFor(player.role)
+        isHuman -> roleColor
+        isWolfTeammate -> WerewolfRed
+        isCheckedWolf -> WerewolfRed
+        else -> VillagerGray
     }
 
     val cardModifier = if (isWolfTeammate && player.alive) {
@@ -631,7 +707,7 @@ private fun PlayerCard(
                     .size(40.dp)
                     .clip(CircleShape)
                     .background(
-                        if (player.alive) roleColor.copy(alpha = 0.3f)
+                        if (player.alive) avatarNumberColor.copy(alpha = 0.3f)
                         else Color.Gray.copy(alpha = 0.3f)
                     ),
                 contentAlignment = Alignment.Center
@@ -639,7 +715,7 @@ private fun PlayerCard(
                 Text(
                     text = "${player.seat + 1}",
                     style = MaterialTheme.typography.titleMedium,
-                    color = if (player.alive) roleColor else Color.Gray,
+                    color = avatarNumberColor,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -656,6 +732,14 @@ private fun PlayerCard(
                 if (isWolfTeammate && player.alive) {
                     Text(
                         text = "狼队友",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WerewolfRed,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                if (isCheckedWolf && player.alive) {
+                    Text(
+                        text = "查杀",
                         style = MaterialTheme.typography.labelSmall,
                         color = WerewolfRed,
                         fontWeight = FontWeight.Bold
@@ -680,6 +764,18 @@ private fun PlayerCard(
             }
         }
     }
+}
+
+/** 天眼模式：8 种身份 → 8 种序号色。 */
+private fun cheatColorFor(role: Role): Color = when (role) {
+    Role.Werewolf -> WerewolfRed
+    Role.WhiteWolfKing -> WhiteWolfKingCrimson
+    Role.Villager -> VillagerGray
+    Role.Idiot -> IdiotLightGreen
+    Role.Witch -> WitchGreen
+    Role.Hunter -> HunterOrange
+    Role.Seer -> SeerPurple
+    Role.Guard -> GuardYellow
 }
 
 @Composable
@@ -830,7 +926,7 @@ private fun NightActionPanel(
             when (dialogue.actionType) {
                 NightActionType.GUARD -> {
                     TargetSelector(
-                        players = alivePlayers.filter { it.seat != humanPlayer?.seat },
+                        players = alivePlayers,
                         onTargetSelected = { selectedTarget = it }
                     )
                 }
@@ -855,7 +951,7 @@ private fun NightActionPanel(
                 }
                 NightActionType.SEER -> {
                     TargetSelector(
-                        players = alivePlayers.filter { it.seat != humanPlayer?.seat },
+                        players = alivePlayers,
                         onTargetSelected = { selectedTarget = it }
                     )
                 }
@@ -1145,12 +1241,14 @@ private fun VotePanel(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                players.filter { it.playerId != humanPlayer?.playerId }.forEach { player ->
+                players.forEach { player ->
                     Button(
                         onClick = { onVote(player.seat) },
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = DarkCard
+                            containerColor = if (player.playerId == humanPlayer?.playerId)
+                                WolfchaPrimary.copy(alpha = 0.25f)
+                            else DarkCard
                         )
                     ) {
                         Text("${player.seat + 1}号 ${player.displayName}")
