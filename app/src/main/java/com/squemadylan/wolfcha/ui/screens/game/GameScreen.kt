@@ -446,9 +446,7 @@ private fun GamePlayScreen(
             isPaused = isPaused,
             onTogglePause = onTogglePause,
             onRequestEndGame = onRequestEndGame,
-            onToggleResultPanel = onToggleResultPanel,
-            showWolfBoomButton = canShowWolfBoomButton,
-            onWolfBoom = onWolfBoom
+            onToggleResultPanel = onToggleResultPanel
         )
 
         // Player Grid
@@ -495,6 +493,7 @@ private fun GamePlayScreen(
                 alivePlayers = gameState.alivePlayers,
                 humanPlayer = gameState.humanPlayer,
                 roleAbilities = gameState.roleAbilities,
+                lastGuardTarget = gameState.nightActions.lastGuardTarget,
                 onAction = onNightAction
             )
         }
@@ -523,6 +522,43 @@ private fun GamePlayScreen(
             )
         }
     }
+
+    // 右下角悬浮"自爆"按钮（白天 + 人类是狼人/白狼王时显示）
+    if (canShowWolfBoomButton) {
+        val isWhiteWolfKing = gameState.humanPlayer?.role == Role.WhiteWolfKing
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.BottomEnd
+        ) {
+            Surface(
+                color = WerewolfRed,
+                shape = RoundedCornerShape(28.dp),
+                shadowElevation = 8.dp,
+                modifier = Modifier
+                    .padding(end = 16.dp, bottom = 16.dp)
+                    .clickable { onWolfBoom() }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Bolt,
+                        contentDescription = "自爆",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (isWhiteWolfKing) "自爆带走" else "自爆",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -531,9 +567,7 @@ private fun GameTopBar(
     isPaused: Boolean,
     onTogglePause: () -> Unit,
     onRequestEndGame: () -> Unit,
-    onToggleResultPanel: () -> Unit = {},
-    showWolfBoomButton: Boolean = false,
-    onWolfBoom: () -> Unit = {}
+    onToggleResultPanel: () -> Unit = {}
 ) {
     Surface(
         color = if (gameState.isNight) NightSurface else DaySurface,
@@ -564,33 +598,6 @@ private fun GameTopBar(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (showWolfBoomButton) {
-                    val isWhiteWolfKing = gameState.humanPlayer?.role == Role.WhiteWolfKing
-                    Surface(
-                        color = WerewolfRed.copy(alpha = 0.25f),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.clickable { onWolfBoom() }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Bolt,
-                                contentDescription = "自爆",
-                                tint = WerewolfRed,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = if (isWhiteWolfKing) "自爆带走" else "自爆",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = WerewolfRed,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
                 StatusBadge(
                     text = "存活: ${gameState.alivePlayers.size}",
                     color = SuccessGreen
@@ -962,6 +969,7 @@ private fun NightActionPanel(
     alivePlayers: List<GamePlayer>,
     humanPlayer: GamePlayer?,
     roleAbilities: RoleAbilities,
+    lastGuardTarget: Int? = null,
     onAction: (NightActionType, Int?, Map<String, String>) -> Unit
 ) {
     var selectedTarget by remember { mutableStateOf<Int?>(null) }
@@ -987,14 +995,20 @@ private fun NightActionPanel(
 
             when (dialogue.actionType) {
                 NightActionType.GUARD -> {
+                    // 守卫：可以守自己，但**不能连续两晚守同一人**
+                    val guardCandidates = alivePlayers.filter { p ->
+                        p.seat != lastGuardTarget
+                    }
                     TargetSelector(
-                        players = alivePlayers,
+                        players = guardCandidates,
                         onTargetSelected = { selectedTarget = it }
                     )
                 }
                 NightActionType.WOLF -> {
+                    // 狼人不能刀自己/队友：过滤掉所有狼阵营（含人类自己）
+                    val wolfCandidates = alivePlayers.filter { !it.role.isWolfRole() }
                     TargetSelector(
-                        players = alivePlayers.filter { !it.role.isWolfRole() },
+                        players = wolfCandidates,
                         onTargetSelected = { selectedTarget = it }
                     )
                 }

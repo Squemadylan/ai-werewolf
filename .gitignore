@@ -19,4 +19,5 @@ app/.cxx/
 *.log
 *.hprof
 build_*.txt
+build_apk_unzipped/
 

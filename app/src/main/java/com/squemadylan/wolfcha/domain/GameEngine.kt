@@ -168,6 +168,16 @@ class GameEngine(
 
     fun performNightActionGuard(targetSeat: Int): WolfchaGameState {
         val currentState = _gameState.value
+        // 守卫铁规则：不能守自己（无意义），且不能连续两晚守同一人
+        val guard = currentState.players.firstOrNull { it.role == Role.Guard && it.alive }
+        if (guard != null && guard.seat == targetSeat) {
+            // 守自己 = 无效操作，忽略
+            return currentState
+        }
+        if (currentState.nightActions.lastGuardTarget == targetSeat) {
+            // 同守同救规则：不能连守同一人
+            return currentState
+        }
         // 历史记录统一在 resolveNight() 中写入，避免重复记录
         val newState = currentState.copy(
             nightActions = currentState.nightActions.copy(
@@ -181,6 +191,11 @@ class GameEngine(
 
     fun performNightActionWolf(targetSeat: Int): WolfchaGameState {
         val currentState = _gameState.value
+        // 狼人铁规则：不能刀自己或队友（狼阵营）
+        val target = currentState.getPlayerBySeat(targetSeat)
+        if (target == null || !target.alive || target.role.isWolfRole()) {
+            return currentState
+        }
         // 历史记录（含是否真正击杀）统一在 resolveNight() 中写入，避免重复记录
         val newState = currentState.copy(
             nightActions = currentState.nightActions.copy(
