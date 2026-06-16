@@ -6,6 +6,7 @@ import com.squemadylan.wolfcha.data.remote.WerewolfPromptBuilder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import java.util.UUID
 import kotlin.random.Random
 
@@ -547,6 +548,62 @@ class GameEngine(
             }
         }
         return fallbackSpeech(player, currentState)
+    }
+
+    /**
+     * U3 流式发言：每个 token 通过 [onToken] 回调推给 ViewModel 用于 UI 渲染；
+     * 最终完整文本仍以 String 返回（与 generateAISpeech 一致）。
+     * 如果 LLM 不可用，回落到非流式 generateAISpeech。
+     */
+    suspend fun generateAISpeechStreaming(
+        playerId: String,
+        onToken: (String) -> Unit
+    ): String {
+        val currentState = _gameState.value
+        val player = currentState.getPlayerById(playerId) ?: return "..."
+
+        val config = llmConfigProvider()
+        if (!config.isReady) {
+            return generateAISpeech(playerId)
+        }
+        val difficulty = currentState.difficulty
+        val (system, user) = WerewolfPromptBuilder.buildSpeechPrompt(currentState, player)
+        val temperature = when (difficulty) {
+            DifficultyLevel.EASY -> 0.9f
+            DifficultyLevel.NORMAL -> 0.7f
+            DifficultyLevel.HARD -> 0.4f
+        }
+        val sb = StringBuilder()
+        var errored: String? = null
+        try {
+            llmService.chatStream(
+                config = config.copy(temperature = temperature),
+                messages = listOf(
+                    LlmService.Message(role = "system", content = system),
+                    LlmService.Message(role = "user", content = user)
+                ),
+                isolationKey = "${currentState.gameId}_${player.playerId}"
+            ).collect { chunk ->
+                when (chunk) {
+                    is LlmService.TokenChunk.Token -> {
+                        sb.append(chunk.text)
+                        onToken(chunk.text)
+                    }
+                    is LlmService.TokenChunk.Error -> { errored = chunk.message }
+                    LlmService.TokenChunk.Done -> { /* fall through */ }
+                }
+            }
+        } catch (e: Exception) {
+            errored = e.localizedMessage ?: e.javaClass.simpleName
+        }
+        if (errored != null) {
+            addSystemMessage("[${player.displayName}] 流式模型调用失败：$errored；回退非流式")
+            return generateAISpeech(playerId)
+        }
+        val content = sb.toString()
+        val cleaned = SpeechSanitizer.sanitize(content)
+        if (SpeechSanitizer.isAcceptableChineseSpeech(cleaned)) return cleaned
+        return generateAISpeech(playerId)
     }
 
     // ==========================================================================

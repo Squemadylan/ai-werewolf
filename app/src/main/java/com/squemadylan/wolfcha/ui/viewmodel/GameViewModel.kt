@@ -98,6 +98,26 @@ class GameViewModel(
         _cheatMode.value = !_cheatMode.value
     }
 
+    // U3：当前 AI 发言的流式状态。
+    // - streamingText 为空 + isStreaming=true → 等待首 token（UI 转圈）
+    // - streamingText 持续追加 → 渲染流式文字
+    // - isStreaming=false + streamingText 非空 → 完整文本已收齐（仅展示用）
+    data class StreamingSpeechState(
+        val speaker: String = "",
+        val speakerPlayerId: String = "",
+        val streamingText: String = "",
+        val isStreaming: Boolean = false
+    )
+    private val _streamingSpeech = MutableStateFlow(StreamingSpeechState())
+    val streamingSpeech: StateFlow<StreamingSpeechState> = _streamingSpeech.asStateFlow()
+
+    fun skipStreaming() {
+        // 用户点跳过：结束流式渲染，但保留已收集的文本（不删，等真正的 next button 推完）
+        if (_streamingSpeech.value.isStreaming) {
+            _streamingSpeech.value = _streamingSpeech.value.copy(isStreaming = false)
+        }
+    }
+
     /**
      * 人类玩家白天主动触发自爆（狼人或白狼王）。
      * 白天任意阶段都可以点；点了之后**立刻打断**当前发言协程：
@@ -695,7 +715,33 @@ class GameViewModel(
                     text = "正在思考…",
                     actionType = NightActionType.NONE
                 )
-                val speech = gameEngine.generateAISpeech(player.playerId)
+                // U3 流式：先把空状态广播到 UI（转圈），再 collect 累积
+                _streamingSpeech.value = StreamingSpeechState(
+                    speaker = player.displayName,
+                    speakerPlayerId = player.playerId,
+                    streamingText = "",
+                    isStreaming = true
+                )
+                _currentDialogue.value = DialogueState(
+                    speaker = player.displayName,
+                    text = "",
+                    actionType = NightActionType.AI_SPEECH_CONTINUE
+                )
+                val speech = gameEngine.generateAISpeechStreaming(player.playerId) { token ->
+                    val cur = _streamingSpeech.value
+                    if (cur.speakerPlayerId == player.playerId) {
+                        _streamingSpeech.value = cur.copy(
+                            streamingText = cur.streamingText + token
+                        )
+                        _currentDialogue.value = _currentDialogue.value?.copy(
+                            text = _streamingSpeech.value.streamingText
+                        )
+                    }
+                }
+                _streamingSpeech.value = _streamingSpeech.value.copy(
+                    streamingText = speech,
+                    isStreaming = false
+                )
                 gameEngine.addPlayerMessage(player.playerId, speech)
                 announcePlayerSpeech(player, speech)
                 _showNightAction.value = true
@@ -818,7 +864,33 @@ class GameViewModel(
                     text = "正在思考…",
                     actionType = NightActionType.NONE
                 )
-                val speech = gameEngine.generateAISpeech(player.playerId)
+                // U3 流式：先把空状态广播到 UI（转圈），再 collect 累积
+                _streamingSpeech.value = StreamingSpeechState(
+                    speaker = player.displayName,
+                    speakerPlayerId = player.playerId,
+                    streamingText = "",
+                    isStreaming = true
+                )
+                _currentDialogue.value = DialogueState(
+                    speaker = player.displayName,
+                    text = "",
+                    actionType = NightActionType.AI_SPEECH_CONTINUE
+                )
+                val speech = gameEngine.generateAISpeechStreaming(player.playerId) { token ->
+                    val cur = _streamingSpeech.value
+                    if (cur.speakerPlayerId == player.playerId) {
+                        _streamingSpeech.value = cur.copy(
+                            streamingText = cur.streamingText + token
+                        )
+                        _currentDialogue.value = _currentDialogue.value?.copy(
+                            text = _streamingSpeech.value.streamingText
+                        )
+                    }
+                }
+                _streamingSpeech.value = _streamingSpeech.value.copy(
+                    streamingText = speech,
+                    isStreaming = false
+                )
                 gameEngine.addPlayerMessage(player.playerId, speech)
                 announcePlayerSpeech(player, speech)
                 _showNightAction.value = true
@@ -969,7 +1041,27 @@ class GameViewModel(
             return
         }
 
-        val speech = gameEngine.generateAISpeech(player.playerId)
+        // U3 流式（遗言）
+        _streamingSpeech.value = StreamingSpeechState(
+            speaker = player.displayName,
+            speakerPlayerId = player.playerId,
+            streamingText = "",
+            isStreaming = true
+        )
+        _currentDialogue.value = DialogueState(
+            speaker = player.displayName,
+            text = "",
+            actionType = NightActionType.AI_SPEECH_CONTINUE,
+            extraData = mapOf("role" to "last_words")
+        )
+        val speech = gameEngine.generateAISpeechStreaming(player.playerId) { token ->
+            val cur = _streamingSpeech.value
+            if (cur.speakerPlayerId == player.playerId) {
+                _streamingSpeech.value = cur.copy(streamingText = cur.streamingText + token)
+                _currentDialogue.value = _currentDialogue.value?.copy(text = _streamingSpeech.value.streamingText)
+            }
+        }
+        _streamingSpeech.value = _streamingSpeech.value.copy(streamingText = speech, isStreaming = false)
         gameEngine.addPlayerMessage(player.playerId, speech)
         announcePlayerSpeech(player, speech)
 
@@ -1316,6 +1408,7 @@ class GameViewModel(
         _isPaused.value = false
         _waitingForSpeechContinue.value = false
         _cheatMode.value = false
+        _streamingSpeech.value = StreamingSpeechState()
         speechCursor = 0
         gameEngine.resetGame()
     }

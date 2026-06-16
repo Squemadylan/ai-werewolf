@@ -53,6 +53,7 @@ fun GameScreen(
     val winner by viewModel.winner.collectAsState()
     val waitingForSpeechContinue by viewModel.waitingForSpeechContinue.collectAsState()
     val cheatMode by viewModel.cheatMode.collectAsState()
+    val streaming by viewModel.streamingSpeech.collectAsState()
 
     var endGameConfirmStep by remember { mutableIntStateOf(0) }
 
@@ -143,7 +144,9 @@ fun GameScreen(
                     onToggleResultPanel = { viewModel.toggleResultPanel() },
                     onDismissResultPanel = { viewModel.dismissResultPanel() },
                     cheatMode = cheatMode,
-                    onWolfBoom = { viewModel.requestWolfBoom() }
+                    onWolfBoom = { viewModel.requestWolfBoom() },
+                    streaming = streaming,
+                    onSkipStreaming = { viewModel.skipStreaming() }
                 )
             }
         }
@@ -420,7 +423,9 @@ private fun GamePlayScreen(
     onToggleResultPanel: () -> Unit,
     onDismissResultPanel: () -> Unit,
     cheatMode: Boolean = false,
-    onWolfBoom: () -> Unit = {}
+    onWolfBoom: () -> Unit = {},
+    streaming: com.squemadylan.wolfcha.ui.viewmodel.GameViewModel.StreamingSpeechState = com.squemadylan.wolfcha.ui.viewmodel.GameViewModel.StreamingSpeechState(),
+    onSkipStreaming: () -> Unit = {}
 ) {
     val isHumanWolf = gameState.isHumanWolf
     val isHumanSeer = gameState.humanPlayer?.role == Role.Seer
@@ -480,9 +485,16 @@ private fun GamePlayScreen(
 
         // Action Area
         if (waitingForSpeechContinue && currentDialogue != null) {
+            // U3：流式状态：是否正在流式生成、是否已收到首 token
+            val isStreaming = streaming.isStreaming && streaming.speakerPlayerId.isNotEmpty()
+            val isWaitingFirstToken = isStreaming && streaming.streamingText.isEmpty()
             SpeechContinuePanel(
                 dialogue = currentDialogue,
-                onClick = onSpeechContinue
+                streamingText = if (isStreaming) streaming.streamingText else currentDialogue.text,
+                isStreaming = isStreaming,
+                isWaitingFirstToken = isWaitingFirstToken,
+                onClick = onSpeechContinue,
+                onSkip = onSkipStreaming
             )
         } else if (showNightAction && currentDialogue != null &&
             currentDialogue.actionType != NightActionType.AI_SPEECH_CONTINUE
@@ -2076,7 +2088,11 @@ private fun VoteRecordPanel(
 @Composable
 private fun SpeechContinuePanel(
     dialogue: com.squemadylan.wolfcha.ui.viewmodel.DialogueState,
-    onClick: () -> Unit
+    streamingText: String,
+    isStreaming: Boolean,
+    isWaitingFirstToken: Boolean,
+    onClick: () -> Unit,
+    onSkip: () -> Unit
 ) {
     Surface(
         color = DaySurface,
@@ -2104,27 +2120,69 @@ private fun SpeechContinuePanel(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                 }
+                if (isStreaming) {
+                    Spacer(Modifier.width(8.dp))
+                    Surface(
+                        color = WolfchaAccent.copy(alpha = 0.25f),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            text = "生成中…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = WolfchaAccent,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
             }
             Spacer(modifier = Modifier.height(10.dp))
-            Text(
-                text = dialogue.text,
-                style = MaterialTheme.typography.bodyLarge,
-                color = TextPrimary
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Button(
-                onClick = onClick,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = WolfchaPrimary
-                )
-            ) {
+            // U3：流式渲染 / 首 token 转圈
+            if (isWaitingFirstToken) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = WolfchaPrimary,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "AI 正在思考…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
+                    )
+                }
+            } else {
                 Text(
-                    "继续",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    text = if (isStreaming) streamingText else dialogue.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = TextPrimary
                 )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (isStreaming) {
+                    OutlinedButton(
+                        onClick = onSkip,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("跳过", fontWeight = FontWeight.Medium)
+                    }
+                }
+                Button(
+                    onClick = onClick,
+                    modifier = Modifier.weight(if (isStreaming) 1f else 1f).fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = WolfchaPrimary
+                    )
+                ) {
+                    Text(
+                        if (isStreaming) "等流完后继续" else "继续",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
     }

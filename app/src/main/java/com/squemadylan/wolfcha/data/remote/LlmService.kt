@@ -2,6 +2,9 @@ package com.squemadylan.wolfcha.data.remote
 
 import com.squemadylan.wolfcha.data.model.LlmConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -11,6 +14,7 @@ import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
+import java.util.concurrent.Executors
 
 /**
  * Minimal OpenAI-compatible chat completion client.
@@ -108,6 +112,121 @@ class LlmService {
         } finally {
             connection.disconnect()
         }
+    }
+
+    /**
+     * U3 真 SSE 流式 chat completion。
+     * 返回 Flow<TokenChunk>：每收到一个 token emit 一次。
+     * 失败时 emit TokenChunk.Error。
+     * OpenAI 兼容格式：data: {json}\n\n，末尾 data: [DONE]
+     */
+    fun chatStream(
+        config: LlmConfig,
+        messages: List<Message>,
+        isolationKey: String? = null
+    ): Flow<TokenChunk> = callbackFlow {
+        if (!config.isReady) {
+            trySend(TokenChunk.Error("LLM 尚未正确配置"))
+            close()
+            return@callbackFlow
+        }
+
+        val endpoint = config.baseUrl.trimEnd('/') + "/chat/completions"
+        val payload = JSONObject().apply {
+            put("model", config.model)
+            put("temperature", config.temperature.toDouble())
+            put("max_tokens", config.maxTokens)
+            put("stream", true)
+            isolationKey?.let { put("user", it) }
+            val arr = JSONArray()
+            messages.forEach { msg ->
+                arr.put(JSONObject().apply {
+                    put("role", msg.role)
+                    put("content", msg.content)
+                })
+            }
+            put("messages", arr)
+        }
+
+        val executor = Executors.newSingleThreadExecutor()
+        executor.execute {
+            var connection: HttpURLConnection? = null
+            try {
+                val url = URL(endpoint)
+                connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 20_000
+                    readTimeout = 120_000
+                    doOutput = true
+                    doInput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("Accept", "text/event-stream")
+                    setRequestProperty("Authorization", "Bearer ${config.apiKey}")
+                    setRequestProperty("X-Request-ID", UUID.randomUUID().toString())
+                    isolationKey?.let { setRequestProperty("X-Wolfcha-Actor", it) }
+                }
+
+                connection.outputStream.use { os: OutputStream ->
+                    os.write(payload.toString().toByteArray(Charsets.UTF_8))
+                    os.flush()
+                }
+
+                val status = connection.responseCode
+                if (status !in 200..299) {
+                    val errBody = connection.errorStream?.let { input ->
+                        BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { it.readText() }
+                    } ?: ""
+                    trySend(TokenChunk.Error(parseError(status, errBody)))
+                    close()
+                    return@execute
+                }
+
+                BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { reader ->
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        val trimmed = line.trim()
+                        if (trimmed.isEmpty()) continue
+                        if (!trimmed.startsWith("data:")) continue
+                        val data = trimmed.removePrefix("data:").trim()
+                        if (data == "[DONE]") break
+                        val token: String? = try {
+                            val obj = JSONObject(data)
+                            val choices = obj.optJSONArray("choices")
+                            if (choices == null || choices.length() == 0) {
+                                null
+                            } else {
+                                val first = choices.optJSONObject(0)
+                                if (first == null) {
+                                    null
+                                } else {
+                                    val delta = first.optJSONObject("delta")
+                                    val msg = first.optJSONObject("message")
+                                    delta?.optString("content", null)
+                                        ?: msg?.optString("content", null)
+                                }
+                            }
+                        } catch (e: Exception) { null }
+                        if (!token.isNullOrEmpty()) {
+                            trySend(TokenChunk.Token(token))
+                        }
+                    }
+                }
+                trySend(TokenChunk.Done)
+                close()
+            } catch (e: Exception) {
+                trySend(TokenChunk.Error("流式请求失败：${e.localizedMessage ?: e.javaClass.simpleName}"))
+                close()
+            } finally {
+                connection?.disconnect()
+            }
+        }
+        awaitClose { executor.shutdownNow() }
+    }
+
+    sealed class TokenChunk {
+        data class Token(val text: String) : TokenChunk()
+        data object Done : TokenChunk()
+        data class Error(val message: String) : TokenChunk()
     }
 
     private fun parseContent(body: String): String? {
