@@ -11,6 +11,11 @@ sealed class WolfchaDestinations(val route: String, val title: String, val icon:
     data object RoleDetail : WolfchaDestinations("role_detail/{roleName}", "角色详情", "") {
         fun createRoute(roleName: String) = "role_detail/$roleName"
     }
+    // U6 复盘
+    data object ReplayList : WolfchaDestinations("replay_list", "历史记录", "history")
+    data object ReplayDetail : WolfchaDestinations("replay_detail/{gameId}", "复盘详情", "") {
+        fun createRoute(gameId: String) = "replay_detail/$gameId"
+    }
 }
 
 val bottomNavItems = listOf(

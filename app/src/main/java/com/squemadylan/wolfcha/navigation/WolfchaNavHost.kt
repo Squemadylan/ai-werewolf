@@ -32,6 +32,8 @@ import com.squemadylan.wolfcha.data.local.PreferencesDataStore
 import com.squemadylan.wolfcha.ui.screens.game.GameScreen
 import com.squemadylan.wolfcha.ui.screens.home.HomeScreen
 import com.squemadylan.wolfcha.ui.screens.howtoplay.HowToPlayScreen
+import com.squemadylan.wolfcha.ui.screens.replay.ReplayDetailScreen
+import com.squemadylan.wolfcha.ui.screens.replay.ReplayListScreen
 import com.squemadylan.wolfcha.ui.screens.roles.RolesScreen
 import com.squemadylan.wolfcha.ui.screens.settings.LlmSettingsScreen
 import com.squemadylan.wolfcha.ui.screens.settings.SettingsScreen
@@ -86,6 +88,9 @@ fun WolfchaNavHost(
                             launchSingleTop = true
                             restoreState = true
                         }
+                    },
+                    onNavigateToReplays = {
+                        navController.navigate(WolfchaDestinations.ReplayList.route)
                     }
                 )
             }
@@ -135,6 +140,20 @@ fun WolfchaNavHost(
                     onBack = { navController.popBackStack() }
                 )
             }
+            // U6 复盘
+            composable(WolfchaDestinations.ReplayList.route) {
+                ReplayListScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpen = { gid -> navController.navigate(WolfchaDestinations.ReplayDetail.createRoute(gid)) }
+                )
+            }
+            composable(WolfchaDestinations.ReplayDetail.route) { backStackEntry ->
+                val gameId = backStackEntry.arguments?.getString("gameId") ?: ""
+                ReplayDetailScreen(
+                    gameId = gameId,
+                    onBack = { navController.popBackStack() }
+                )
+            }
         }
     }
 }
@@ -149,7 +168,9 @@ private fun BottomNavigationBar(navController: NavHostController) {
     if (currentRoute == WolfchaDestinations.LlmSettings.route ||
         currentRoute == WolfchaDestinations.TtsSettings.route ||
         currentRoute == WolfchaDestinations.HowToPlay.route ||
-        currentRoute?.startsWith("role_detail") == true
+        currentRoute == WolfchaDestinations.ReplayList.route ||
+        currentRoute?.startsWith("role_detail") == true ||
+        currentRoute?.startsWith("replay_detail") == true
     ) {
         return
     }

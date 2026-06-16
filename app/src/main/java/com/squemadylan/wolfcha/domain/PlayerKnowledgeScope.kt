@@ -177,7 +177,7 @@ object PlayerKnowledgeScope {
 - 阵营构成：$wolfDesc；$goodDesc。
 - 好人阵营胜利条件：放逐所有狼人。
 - 狼人阵营胜利条件（屠边）：杀光全部平民，或杀光全部神职人员，二者满足其一即获胜；不需要消灭所有好人。
-- 游戏以「夜晚行动 → 白天发言+投票放逐」交替进行。
+- 游戏以「夜晚行动 → 白天发言+投票放逐」交替进行；第 1 天首轮 9 人以上会先进行「警长竞选」流程：上警 → 上警者发言 → 场下投票 → 选警长（不是放逐，被选上的人不会出局，胜者获得警徽）。
 
 【角色技能】
 ${skillLines.joinToString("\n")}
@@ -356,6 +356,14 @@ ${skillLines.joinToString("\n")}
         val topVoteTarget = findTopVoteTarget(state) // 当前票数最高者
         val lastNightDeaths = state.nightDeaths[state.day]
         val lastCheck = state.nightActions.seerHistory.lastOrNull()
+
+        // === U2：警长竞选阶段（DAY_BADGE_*）走专门的策略，避免 AI 误把警选当放逐 ===
+        val isBadgePhase = state.phase == Phase.DAY_BADGE_SIGNUP ||
+            state.phase == Phase.DAY_BADGE_SPEECH ||
+            state.phase == Phase.DAY_BADGE_ELECTION
+        if (isBadgePhase) {
+            return buildBadgePhaseObjective(viewer, state, seerClaimant, topVoteTarget, totalAlive, wolfCount, villageCount)
+        }
 
         return when (viewer.role) {
 
@@ -744,6 +752,57 @@ ${if (lastNightDead != null) "昨夜${lastNightDead + 1}号${state.getPlayerBySe
 - 守卫通常不需要跳身份，可以说"我是好人，没有信息"。
 - 可以暗示"我有身份"，但不说明是什么。
 【投票策略】根据场上发言判断，优先投发言疑点最大的玩家。
+        """.trimIndent()
+    }
+
+    /**
+     * U2：警长竞选阶段的策略（覆盖所有角色）。
+     * 关键要点：警长竞选**不是放逐**——被选中的人不会出局，胜者只是获得警徽。
+     */
+    private fun buildBadgePhaseObjective(
+        viewer: GamePlayer,
+        state: WolfchaGameState,
+        seerClaimant: Int?,
+        topVoteTarget: Int?,
+        totalAlive: Int,
+        wolfCount: Int,
+        villageCount: Int
+    ): String {
+        val seat = viewer.seat + 1
+        val candidates = state.badge.candidates
+        val isCandidate = viewer.seat in candidates
+
+        val phaseLine = when (state.phase) {
+            Phase.DAY_BADGE_SIGNUP -> "现在是「警长上警举手」阶段。是否上警你自己决定。"
+            Phase.DAY_BADGE_SPEECH -> "现在是「警长竞选发言」阶段。"
+            Phase.DAY_BADGE_ELECTION -> "现在是「警长投票」阶段——场下玩家从候选人中选出警长。"
+            else -> "现在是警长竞选流程中。"
+        }
+
+        val roleHint = when (viewer.role) {
+            Role.Werewolf, Role.WhiteWolfKing -> if (isCandidate)
+                "你是狼但选择上警——发言要伪装成强神，吸引好人站你这边。投票阶段：让狼队友把票集中投给你或队友。"
+            else "你是狼，场下不要上警——把票投给队友候选人是最好的策略。"
+            Role.Seer -> "你是预言家：建议上警（首日就拿到警徽可极大增加查验权威）。"
+            Role.Witch, Role.Hunter, Role.Guard -> if (isCandidate)
+                "你是神职，可以考虑上警争取首日领导权。"
+            else "你不上警：发言阶段分析谁是预言家，投票时站你信任的候选人。"
+            Role.Idiot -> if (isCandidate)
+                "你是白痴但已翻牌：不要上警（暴露后没意义）。"
+            else "你不上警。"
+            else -> "你是平民：可以选择上警或不上，看你对自己的发言是否有信心。"
+        }
+
+        return """
+【当前阶段·警长竞选】$phaseLine
+【关键提示】警长竞选是**选出警徽归属**，**不是放逐**——被选上的人不会出局，胜者获得警徽。
+$roleHint
+【当前候选人】${if (candidates.isEmpty()) "（暂无）" else candidates.joinToString("、") { "${it + 1}号" }}
+${
+    if (state.phase == Phase.DAY_BADGE_ELECTION)
+        "【投票策略】从上述候选人中选一个你信任的（不信任的也可以投：宁可不选也不要投狼）。"
+    else ""
+}
         """.trimIndent()
     }
 

@@ -494,6 +494,7 @@ private fun GamePlayScreen(
                 humanPlayer = gameState.humanPlayer,
                 roleAbilities = gameState.roleAbilities,
                 lastGuardTarget = gameState.nightActions.lastGuardTarget,
+                wolfTeammateSeats = if (isHumanWolf) wolfTeammateSeats + (gameState.humanPlayer?.seat ?: -1) else emptySet(),
                 onAction = onNightAction
             )
         }
@@ -914,10 +915,13 @@ private fun MessageItem(message: ChatMessage, players: List<GamePlayer>) {
             }
             Surface(
                 color = if (isHuman) WolfchaPrimary.copy(alpha = 0.3f) else DarkCard,
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.weight(1f, fill = false)
             ) {
                 Column(
-                    modifier = Modifier.padding(12.dp)
+                    modifier = Modifier
+                        .padding(12.dp)
+                        .widthIn(max = 320.dp)
                 ) {
                     Text(
                         text = message.playerName,
@@ -970,6 +974,7 @@ private fun NightActionPanel(
     humanPlayer: GamePlayer?,
     roleAbilities: RoleAbilities,
     lastGuardTarget: Int? = null,
+    wolfTeammateSeats: Set<Int> = emptySet(),
     onAction: (NightActionType, Int?, Map<String, String>) -> Unit
 ) {
     var selectedTarget by remember { mutableStateOf<Int?>(null) }
@@ -1005,10 +1010,12 @@ private fun NightActionPanel(
                     )
                 }
                 NightActionType.WOLF -> {
-                    // 狼人不能刀自己/队友：过滤掉所有狼阵营（含人类自己）
-                    val wolfCandidates = alivePlayers.filter { !it.role.isWolfRole() }
-                    TargetSelector(
-                        players = wolfCandidates,
+                    // U5 狼夜袭面板：显示全部存活玩家（不限制）；自己+狼队友用红框标识；
+                    // 允许自刀 / 杀队友（"狼自爆流"）。
+                    WolfTargetSelector(
+                        players = alivePlayers,
+                        accentSeats = wolfTeammateSeats,
+                        accentColor = WerewolfRed,
                         onTargetSelected = { selectedTarget = it }
                     )
                 }
@@ -1205,6 +1212,56 @@ private fun TargetSelector(
                     labelColor = TextSecondary
                 )
             )
+        }
+    }
+}
+
+/**
+ * 狼夜袭目标选择器（U5）：
+ * - 显示全部存活玩家（不限制，可选自己/狼队友）
+ * - accentSeats（自己+狼队友）画红色边框标识
+ * - 选中时变成深红底
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WolfTargetSelector(
+    players: List<GamePlayer>,
+    accentSeats: Set<Int>,
+    accentColor: Color,
+    onTargetSelected: (Int) -> Unit
+) {
+    var selectedSeat by remember { mutableStateOf<Int?>(null) }
+
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        players.forEach { player ->
+            val isSelected = selectedSeat == player.seat
+            val isAccent = player.seat in accentSeats
+            val borderColor = if (isSelected) accentColor else if (isAccent) accentColor.copy(alpha = 0.8f) else Color.Transparent
+            val borderWidth = if (isSelected) 2.dp else if (isAccent) 2.dp else 0.dp
+            val containerColor = if (isSelected) accentColor.copy(alpha = 0.35f) else DarkCard
+            val labelColor = if (isSelected) TextPrimary else if (isAccent) accentColor else TextSecondary
+
+            Surface(
+                color = containerColor,
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(borderWidth, borderColor),
+                modifier = Modifier.clickable {
+                    selectedSeat = player.seat
+                    onTargetSelected(player.seat)
+                }
+            ) {
+                Text(
+                    text = "${player.seat + 1}号 ${player.displayName}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = labelColor,
+                    fontWeight = if (isAccent || isSelected) FontWeight.Bold else FontWeight.Normal,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+            }
         }
     }
 }

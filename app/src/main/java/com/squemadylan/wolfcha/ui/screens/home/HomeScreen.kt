@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Casino
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -57,7 +58,8 @@ import com.squemadylan.wolfcha.ui.viewmodel.AppViewModel
 @Composable
 fun HomeScreen(
     appViewModel: AppViewModel,
-    onStartGame: () -> Unit
+    onStartGame: () -> Unit,
+    onNavigateToReplays: () -> Unit = {}
 ) {
     val prefs by appViewModel.preferences.collectAsState()
     val isGenerating by appViewModel.isGeneratingPersona.collectAsState()
@@ -309,6 +311,20 @@ fun HomeScreen(
                 Icon(Icons.Default.PlayArrow, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("开始游戏", fontWeight = FontWeight.Bold)
+            }
+
+            // U6 历史记录入口
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onNavigateToReplays,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(Icons.Default.History, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("历史记录（复盘）", fontWeight = FontWeight.Medium)
             }
 
             Spacer(Modifier.height(24.dp))

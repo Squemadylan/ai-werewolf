@@ -73,7 +73,21 @@ enum class GameEventType {
     NIGHT_ACTION,
     VOTE_CAST,
     PLAYER_DIED,
-    GAME_END
+    GAME_END,
+    // === 完整复盘事件类型（U6 新增）===
+    BADGE_SIGNUP,       // 上警报名（payload: seat, displayName, signup=true/false）
+    BADGE_SPEECH,       // 上警发言（payload: seat, displayName, content）
+    BADGE_ELECTION_VOTE,// 警长投票（payload: voterSeat, voterName, targetSeat, targetName）
+    BADGE_HOLDER_SET,   // 警长选定（payload: seat, displayName）
+    GUARD_ACTION,       // 守卫守护（payload: seat, displayName, targetSeat, targetName）
+    WOLF_KILL,          // 狼人夜袭（payload: actorSeats, targetSeat, targetName, succeeded）
+    WITCH_ACTION,       // 女巫用药（payload: healedSeat, poisonedSeat）
+    SEER_CHECK,         // 预言家查验（payload: seat, targetSeat, result=wolf|good）
+    HUNTER_SHOOT,       // 猎人开枪（payload: seat, targetSeat）
+    WHITE_WOLF_BOOM,    // 白狼王自爆（payload: seat, targetSeat）
+    WOLF_BOOM,          // 普通狼自爆（payload: seat）
+    IDIOT_REVEAL,       // 白痴翻牌（payload: seat）
+    LAST_WORDS          // 遗言（payload: seat, displayName, content）
 }
 
 enum class EventVisibility {

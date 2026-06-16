@@ -24,11 +24,18 @@ class GameViewModel(
 
     private val gameEngine = GameEngine()
     private val nightAiDecision = NightAiDecision()
+    private val replayStore = com.squemadylan.wolfcha.data.replay.ReplayStore(application)
 
     val gameState: StateFlow<WolfchaGameState> = gameEngine.gameState
 
     /** Incremented on quit to cancel in-flight game loops. */
     private var gameSessionId = 0
+
+    // U6 复盘：当前对局元数据
+    private var currentGameId: String = ""
+    private var currentGameStartTime: Long = 0L
+    // 各玩家死亡日 / 死亡原因（用于 ReplayPlayer）
+    private val playerDeathLog = mutableMapOf<Int, Pair<Int, String>>() // seat -> (day, reason)
 
     init {
         gameEngine.setLlmConfigProvider { llmConfigCached }
@@ -146,6 +153,7 @@ class GameViewModel(
         announceSystem("${wolfSeat + 1}号 ${wolf.displayName} 主动自爆！立即进入夜晚")
 
         // 自杀
+        recordDeath(wolfSeat, "wolf_boom")
         gameEngine.killPlayer(wolfSeat)
         announceSystem("${wolfSeat + 1}号 ${wolf.displayName} 自爆出局")
 
@@ -188,9 +196,11 @@ class GameViewModel(
                         .filter { it.seat != wwk.seat && !it.role.isWolfRole() }
                         .randomOrNull()
                     gameEngine.killPlayer(wwk.seat)
+                    recordDeath(wwk.seat, "wwk_boom")
                     announceSystem("${wwk.seat + 1}号 ${wwk.displayName} 白狼王自爆！")
                     if (target != null) {
                         gameEngine.killPlayer(target.seat)
+                        recordDeath(target.seat, "boom_taken")
                         announceSystem("${target.seat + 1}号 ${target.displayName} 被白狼王带走")
                     }
                     delay(500)
@@ -261,7 +271,63 @@ class GameViewModel(
         VoiceHelper.stop()
         _isPaused.value = false
         _waitingForSpeechContinue.value = false
+        // U6：保存当前对局复盘（如果是完结或非空）
+        saveCurrentReplaySnapshot(finished = _gameEnded.value)
         resetGame()
+    }
+
+    /** U6：记录某玩家在某天死亡（用于 ReplayPlayer 字段） */
+    private fun recordDeath(seat: Int, reason: String) {
+        if (seat !in playerDeathLog) {
+            playerDeathLog[seat] = gameEngine.gameState.value.day to reason
+        }
+    }
+
+    /** U6：将当前 gameEngine 状态打包为 ReplayRecord 并落盘 */
+    private fun saveCurrentReplaySnapshot(finished: Boolean) {
+        if (currentGameId.isBlank()) return
+        val state = gameEngine.gameState.value
+        if (state.players.isEmpty()) return
+        viewModelScope.launch {
+            val players = state.players.map { p ->
+                val death = playerDeathLog[p.seat]
+                com.squemadylan.wolfcha.data.replay.ReplayPlayer(
+                    seat = p.seat,
+                    displayName = p.displayName,
+                    role = p.role.name,
+                    alignment = p.alignment.name,
+                    isHuman = p.isHuman,
+                    survived = p.alive && finished,
+                    diedOnDay = death?.first,
+                    diedReason = death?.second
+                )
+            }
+            val events = state.events.map { e ->
+                com.squemadylan.wolfcha.data.replay.ReplayEvent(
+                    type = e.type.name,
+                    day = state.day,
+                    phase = state.phase.name,
+                    visibility = e.visibility.name,
+                    timestamp = e.timestamp,
+                    payload = e.payload
+                )
+            }
+            val record = com.squemadylan.wolfcha.data.replay.ReplayRecord(
+                gameId = currentGameId,
+                startTime = currentGameStartTime,
+                endTime = System.currentTimeMillis(),
+                playerCount = state.players.size,
+                isFinished = finished,
+                winner = state.winner?.name,
+                players = players,
+                events = events
+            )
+            try {
+                replayStore.save(record)
+            } catch (e: Exception) {
+                android.util.Log.e("GameViewModel", "save replay failed", e)
+            }
+        }
     }
 
     fun onSpeechContinue() {
@@ -302,6 +368,10 @@ class GameViewModel(
             )
             gameEngine.createGame(gameSettings)
             gameEngine.setupPlayers(gameSettings)
+            // U6 复盘初始化
+            currentGameId = java.util.UUID.randomUUID().toString()
+            currentGameStartTime = System.currentTimeMillis()
+            playerDeathLog.clear()
             _showRoleReveal.value = true
             _isLoading.value = false
 
@@ -463,6 +533,8 @@ class GameViewModel(
         if (!activeOrAbort(session)) return
         _showNightAction.value = false
         val (_, nightDeaths) = gameEngine.resolveNight()
+        // U6：记录夜间死亡
+        nightDeaths.forEach { (seat, reason) -> recordDeath(seat, reason) }
 
         val deathMessages = nightDeaths.map { (seat, _) ->
             val player = gameEngine.gameState.value.getPlayerBySeat(seat)
@@ -912,6 +984,7 @@ class GameViewModel(
         wasHunter: Boolean
     ) {
         if (!activeOrAbort(session)) return
+        recordDeath(executedSeat, "vote")
         gameEngine.killPlayer(executedSeat)
         val player = gameEngine.gameState.value.getPlayerBySeat(executedSeat)
         announceSystem("${executedSeat + 1}号 ${player?.displayName ?: ""} 出局")
@@ -964,11 +1037,13 @@ class GameViewModel(
         if (!activeOrAbort(session)) return
         _showNightAction.value = false
 
+        recordDeath(wwkSeat, "wwk_boom")
         gameEngine.killPlayer(wwkSeat)
         val wwk = gameEngine.gameState.value.getPlayerBySeat(wwkSeat)
         announceSystem("${wwkSeat + 1}号 ${wwk?.displayName ?: ""} 自爆出局")
 
         if (targetSeat != null) {
+            recordDeath(targetSeat, "boom_taken")
             gameEngine.killPlayer(targetSeat)
             val target = gameEngine.gameState.value.getPlayerBySeat(targetSeat)
             announceSystem("${targetSeat + 1}号 ${target?.displayName ?: ""} 被白狼王带走")
@@ -1026,6 +1101,7 @@ class GameViewModel(
         gameEngine.markHunterShotUsed()
 
         if (targetSeat != null) {
+            recordDeath(targetSeat, "hunter")
             gameEngine.killPlayer(targetSeat)
             val target = gameEngine.gameState.value.getPlayerBySeat(targetSeat)
             announceSystem("${targetSeat + 1}号 ${target?.displayName ?: ""} 被猎人带走")
@@ -1215,6 +1291,8 @@ class GameViewModel(
         _gameEnded.value = true
         val winnerText = if (winner == Alignment.VILLAGE) "好人阵营胜利！" else "狼人阵营胜利！"
         announceSystem("游戏结束！$winnerText")
+        // U6：完结时保存复盘
+        saveCurrentReplaySnapshot(finished = true)
     }
 
     fun resetGame() {

@@ -191,15 +191,17 @@ class GameEngine(
 
     fun performNightActionWolf(targetSeat: Int): WolfchaGameState {
         val currentState = _gameState.value
-        // 狼人铁规则：不能刀自己或队友（狼阵营）
+        // U5：允许自刀 / 杀狼队友（"狼自爆流"）。仅校验目标存活。
         val target = currentState.getPlayerBySeat(targetSeat)
-        if (target == null || !target.alive || target.role.isWolfRole()) {
+        if (target == null || !target.alive) {
             return currentState
         }
         // 历史记录（含是否真正击杀）统一在 resolveNight() 中写入，避免重复记录
         val newState = currentState.copy(
             nightActions = currentState.nightActions.copy(
-                wolfTarget = targetSeat
+                wolfTarget = targetSeat,
+                // 记录狼人投票视角（"我方"被刀也算）
+                wolfVotes = currentState.nightActions.wolfVotes
             )
         )
         _gameState.value = newState
