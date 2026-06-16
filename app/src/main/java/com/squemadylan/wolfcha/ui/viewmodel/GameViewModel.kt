@@ -100,17 +100,27 @@ class GameViewModel(
 
     /**
      * 人类玩家白天主动触发自爆（狼人或白狼王）。
-     * 白天任意阶段都可以点；点了之后立即结算：
-     * - 白狼王：自爆后选择带走的玩家；再进入夜晚
-     * - 普通狼人：自爆后直接进入夜晚（不带人）
+     * 白天任意阶段都可以点；点了之后**立刻打断**当前发言协程：
+     * 1. gameSessionId++ 让所有在跑协程（runDaySpeech / runBadgeSpeech）下次 activeOrAbort 失败
+     * 2. 清掉 SpeechContinuePanel 的等待
+     * 3. 白狼王：进入选目标 UI；普通狼：直接进夜晚
      */
     fun requestWolfBoom() {
+        // U4：立刻打断当前发言协程
+        android.util.Log.i("WolfBoom", "requestWolfBoom: bumping session=${gameSessionId} -> ${gameSessionId + 1}")
+        gameSessionId++  // 让所有 captureSession != gameSessionId 的协程主动退出
+        _waitingForSpeechContinue.value = false
+        _showNightAction.value = false
+        _showVoteDialog.value = false
+        _currentDialogue.value = null
+        VoiceHelper.stop()
+
         viewModelScope.launch {
-            if (_isExecutingNightAction.value) return@launch
+            // 短暂让旧协程识别 session 变化
+            delay(50)
             val session = captureSession()
-            if (!activeOrAbort(session)) return@launch
             val state = gameEngine.gameState.value
-            // 仅在白天、未结束、未暂停时生效
+            // 仅在白天、未结束时生效
             if (state.isNight || _gameEnded.value) return@launch
             val human = state.humanPlayer ?: return@launch
             if (!human.alive) return@launch
