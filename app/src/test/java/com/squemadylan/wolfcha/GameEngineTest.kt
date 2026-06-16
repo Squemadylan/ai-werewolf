@@ -8,6 +8,7 @@ import com.squemadylan.wolfcha.data.model.NightActions
 import com.squemadylan.wolfcha.data.model.Role
 import com.squemadylan.wolfcha.data.model.RoleAbilities
 import com.squemadylan.wolfcha.data.model.WolfchaGameState
+import com.squemadylan.wolfcha.data.model.isWolfRole
 import com.squemadylan.wolfcha.domain.GameEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -202,5 +203,44 @@ class GameEngineTest {
         engine.resolveNight()
         assertEquals(1, engine.gameState.value.nightActions.wolfKillHistory.size)
         assertEquals(1, engine.gameState.value.nightActions.guardActionHistory.size)
+    }
+
+    // ====================== U5：狼自爆流 ======================
+
+    @Test
+    fun wolfCanKillTeammate() {
+        val engine = GameEngine()
+        engine.createGame(GameSettings(playerCount = 9))
+        engine.setupPlayers(GameSettings(playerCount = 9))
+        val state = engine.gameState.value
+        val wolves = state.players.filter { it.role.isWolfRole() }.sortedBy { it.seat }
+        assertTrue("需要至少 2 个狼", wolves.size >= 2)
+        val teammate = wolves[1]
+        engine.performNightActionWolf(teammate.seat)
+        assertEquals(teammate.seat, engine.gameState.value.nightActions.wolfTarget)
+    }
+
+    @Test
+    fun wolfCanKillSelf() {
+        val engine = GameEngine()
+        engine.createGame(GameSettings(playerCount = 9))
+        engine.setupPlayers(GameSettings(playerCount = 9))
+        val state = engine.gameState.value
+        val selfWolf = state.players.first { it.role.isWolfRole() }
+        engine.performNightActionWolf(selfWolf.seat)
+        assertEquals(selfWolf.seat, engine.gameState.value.nightActions.wolfTarget)
+    }
+
+    @Test
+    fun wolfCannotKillDead() {
+        val engine = GameEngine()
+        engine.createGame(GameSettings(playerCount = 9))
+        engine.setupPlayers(GameSettings(playerCount = 9))
+        val state = engine.gameState.value
+        val target = state.alivePlayers.first()
+        engine.killPlayer(target.seat)
+        engine.performNightActionWolf(target.seat)
+        // 已死不能被记录为目标（自刀/杀队友是 alive 才允许）
+        assertNull(engine.gameState.value.nightActions.wolfTarget)
     }
 }
