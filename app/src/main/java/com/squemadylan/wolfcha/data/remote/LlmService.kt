@@ -149,6 +149,13 @@ class LlmService {
         }
 
         val executor = Executors.newSingleThreadExecutor()
+        // U3 补丁：30 秒硬超时（半开连接防护）
+        val timeoutExecutor = Executors.newSingleThreadScheduledExecutor()
+        val timeoutFuture = timeoutExecutor.schedule({
+            trySend(TokenChunk.Error("生成超时（30 秒未收到 token）"))
+            close()
+        }, 30, java.util.concurrent.TimeUnit.SECONDS)
+
         executor.execute {
             var connection: HttpURLConnection? = null
             try {
@@ -178,9 +185,11 @@ class LlmService {
                     } ?: ""
                     trySend(TokenChunk.Error(parseError(status, errBody)))
                     close()
+                    timeoutFuture.cancel(false)
                     return@execute
                 }
 
+                var firstTokenReceived = false
                 BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { reader ->
                     while (true) {
                         val line = reader.readLine() ?: break
@@ -207,6 +216,11 @@ class LlmService {
                             }
                         } catch (e: Exception) { null }
                         if (!token.isNullOrEmpty()) {
+                            if (!firstTokenReceived) {
+                                firstTokenReceived = true
+                                // 收到首 token，取消硬超时
+                                timeoutFuture.cancel(false)
+                            }
                             trySend(TokenChunk.Token(token))
                         }
                     }
@@ -217,10 +231,16 @@ class LlmService {
                 trySend(TokenChunk.Error("流式请求失败：${e.localizedMessage ?: e.javaClass.simpleName}"))
                 close()
             } finally {
+                timeoutFuture.cancel(false)
                 connection?.disconnect()
+                timeoutExecutor.shutdownNow()
             }
         }
-        awaitClose { executor.shutdownNow() }
+        awaitClose {
+            timeoutFuture.cancel(false)
+            timeoutExecutor.shutdownNow()
+            executor.shutdownNow()
+        }
     }
 
     sealed class TokenChunk {
